@@ -593,8 +593,16 @@ impl Driver {
         })
     }
 
+    /// The configuration the driver was spawned with. Its `limits` stay the constructor value;
+    /// `limits()` returns the live ones.
     pub fn config(&self) -> &DriverConfig {
         &self.cfg
+    }
+
+    /// The limits in force: the constructor's, or the last accepted `set_limits`. The real-time
+    /// thread applies a new value with the next telegram; targets are checked against it at once.
+    pub fn limits(&self) -> Limits {
+        *self.motion.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     pub fn local_addr(&self) -> SocketAddr {

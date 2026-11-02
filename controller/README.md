@@ -59,6 +59,16 @@ RSI needs its own sensor network, separate from the EKI addresses (`172.31.1.x`)
    through the Python `Driver.stream`.
 5. Fault paths: `Driver.fault()`, cable unplugged, program restarted while the driver
    keeps running (it must reconnect and re-capture the start pose).
+6. Confirm what the driver and the simulator assume about the robot (with
+   `rsi-monitor` and the pendant's RSI monitor):
+   - `ProgStatus` reads 3 while the program runs and 4 when it is stopped (the driver
+     pauses playback on anything but 3);
+   - `IPOC` advances by 4 per telegram (the driver counts any other step as a gap);
+   - whether the ETHERNET `Timeout` counts late packets as a running total or only
+     consecutive ones (the simulator assumes a running total, like the `Delay` value).
+
+The shipped `.rsix` files are LF-terminated UTF-8 without a BOM. If WorkVisual refuses
+them, convert them to CRLF with a BOM (e.g. `unix2dos -m`) before importing.
 
 Read the machine data (`$SOFTN_END`, `$SOFTP_END`, axis speeds) from the pendant and
 put them into `Limits` before step 3. The driver enforces the true joint limits

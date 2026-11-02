@@ -64,6 +64,11 @@ pub(crate) fn np6<'py>(py: Python<'py>, v: &[f64; 6]) -> Bound<'py, PyArray1<f64
     PyArray1::from_slice(py, v)
 }
 
+/// Seconds from Python as a `Duration`: negative, NaN or too large values raise `ValueError`.
+fn secs(x: f64, what: &str) -> PyResult<Duration> {
+    Duration::try_from_secs_f64(x).map_err(|e| PyValueError::new_err(format!("{what}: {e}")))
+}
+
 fn parse_addr(s: &str, what: &str) -> PyResult<SocketAddr> {
     s.parse().map_err(|_| PyValueError::new_err(format!("{what} {s:?} is not host:port")))
 }
@@ -219,7 +224,7 @@ impl PyControllerSim {
         let eth = EthernetConfig::from_path(config).map_err(to_py)?;
         let mut cfg = SimConfig::new(eth, parse_addr(target, "target")?);
         cfg.bind = parse_addr(bind, "bind")?;
-        cfg.cycle = Duration::from_secs_f64(cycle_ms / 1000.0);
+        cfg.cycle = secs(cycle_ms / 1000.0, "cycle_ms")?;
         cfg.timeout = timeout;
         cfg.lag_cycles = lag_cycles;
         cfg.jitter = Duration::from_micros(jitter_us);
@@ -250,9 +255,10 @@ impl PyControllerSim {
         }
     }
 
-    fn wait_exit(&self, py: Python<'_>, timeout: f64) -> Option<String> {
-        let h = self.handle.as_ref()?;
-        py.detach(|| h.wait_exit(Duration::from_secs_f64(timeout))).map(exit_name)
+    fn wait_exit(&self, py: Python<'_>, timeout: f64) -> PyResult<Option<String>> {
+        let timeout = secs(timeout, "timeout")?;
+        let Some(h) = self.handle.as_ref() else { return Ok(None) };
+        Ok(py.detach(|| h.wait_exit(timeout)).map(exit_name))
     }
 
     fn stop(&mut self, py: Python<'_>) -> PyResult<String> {
@@ -458,7 +464,8 @@ pub struct PyDriver {
     /// `None` once `close()` has taken the driver out: every method then raises
     /// `Error("driver is closed")`.
     inner: Option<Driver>,
-    wait: f64,
+    /// How long `__enter__` waits for the robot.
+    wait: Duration,
 }
 
 impl PyDriver {
@@ -507,7 +514,8 @@ impl PyDriver {
         if let Some(s) = stop_channel {
             cfg = cfg.stop_channel(s);
         }
-        cfg = cfg.link_timeout(Duration::from_secs_f64(link_timeout)).rt_priority(rt_priority).cycle(Duration::from_secs_f64(cycle_ms / 1000.0));
+        cfg = cfg.link_timeout(secs(link_timeout, "link_timeout")?).rt_priority(rt_priority).cycle(secs(cycle_ms / 1000.0, "cycle_ms")?);
+        let wait = secs(wait, "wait")?;
         Ok(PyDriver { inner: Some(Driver::spawn(cfg).map_err(to_py)?), wait })
     }
 
@@ -523,10 +531,16 @@ impl PyDriver {
         Ok(self.driver()?.is_faulted())
     }
 
+    /// The limits in force: the constructor's, or the last accepted `set_limits`.
+    fn limits(&self) -> PyResult<PyLimits> {
+        Ok(PyLimits { inner: self.driver()?.limits() })
+    }
+
     #[pyo3(signature = (timeout=60.0))]
     fn wait_for_robot(&self, py: Python<'_>, timeout: f64) -> PyResult<()> {
         let d = self.driver()?;
-        py.detach(|| d.wait_for_robot(Duration::from_secs_f64(timeout))).map_err(to_py)
+        let timeout = secs(timeout, "timeout")?;
+        py.detach(|| d.wait_for_robot(timeout)).map_err(to_py)
     }
 
     /// Waits for every queued command to be applied, the target queue to be empty and the
@@ -536,7 +550,8 @@ impl PyDriver {
     #[pyo3(signature = (timeout=10.0))]
     fn wait_idle(&self, py: Python<'_>, timeout: f64) -> PyResult<()> {
         let d = self.driver()?;
-        py.detach(|| d.wait_idle(Duration::from_secs_f64(timeout))).map_err(to_py)
+        let timeout = secs(timeout, "timeout")?;
+        py.detach(|| d.wait_idle(timeout)).map_err(to_py)
     }
 
     fn state(&self) -> PyResult<PyRobotState> {
@@ -563,7 +578,7 @@ impl PyDriver {
         let arr = as_f64_array(py, points)?;
         let arr: PyReadonlyArrayDyn<'_, f64> = arr.extract()?;
         let pts = points_from(arr)?;
-        d.stream(&pts, Duration::from_secs_f64(dt.max(0.0)), replace).map_err(to_py)
+        d.stream(&pts, secs(dt, "dt")?, replace).map_err(to_py)
     }
 
     /// `duration + 5.0` s of headroom past the requested duration when `block=True`, so a
@@ -575,9 +590,10 @@ impl PyDriver {
         let arr = as_f64_array(py, q)?;
         let arr: PyReadonlyArray1<'_, f64> = arr.extract()?;
         let q = arr6(arr, "q")?;
-        d.move_to(q, Duration::from_secs_f64(duration.max(0.0))).map_err(to_py)?;
+        d.move_to(q, secs(duration, "duration")?).map_err(to_py)?;
         if block {
-            py.detach(|| d.wait_idle(Duration::from_secs_f64(duration + 5.0))).map_err(to_py)?;
+            let timeout = secs(duration + 5.0, "duration")?;
+            py.detach(|| d.wait_idle(timeout)).map_err(to_py)?;
         }
         Ok(())
     }
@@ -628,7 +644,7 @@ impl PyDriver {
     fn __enter__<'a>(slf: PyRef<'a, Self>, py: Python<'a>) -> PyResult<PyRef<'a, Self>> {
         let wait = slf.wait;
         let inner: &Driver = slf.driver()?; // `&Driver` is Send; a `PyRef` is not
-        py.detach(|| inner.wait_for_robot(Duration::from_secs_f64(wait))).map_err(to_py)?;
+        py.detach(|| inner.wait_for_robot(wait)).map_err(to_py)?;
         Ok(slf)
     }
 

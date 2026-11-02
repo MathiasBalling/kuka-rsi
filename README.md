@@ -68,6 +68,17 @@ holding the command short). `Limits.kr10_defaults()` keeps an acceleration limit
   true and `stream`, `move_to`, `notify` and `wait_idle` raise `Faulted` (Rust:
   `Error::Faulted`). `fault` and `stop_program` stay allowed. A fault is a state within
   the `Active` session, so `session()` does not show it.
+- `set_speed_scale` survives a session restart: a scale of 0 set before the KRL program
+  is restarted still pauses playback in the new session.
+- `config().limits` (Rust) keeps the constructor value; `set_limits` changes the live
+  limits, which `limits()` returns (Rust `Driver::limits()`, Python `Driver.limits()`).
+- `link_timeout` must exceed the robot's own give-up time, the ETHERNET object's
+  `Timeout` × cycle (100 × 4 ms = 0.4 s in the shipped context; the default 0.5 s does).
+  Shorter, the driver may declare a session lost that the robot still keeps, and the next
+  telegram would start a new session with `q_start` captured mid-motion.
+- The tracking-error warning (`Limits.max_tracking_error`, default 2°) compares the
+  actual position with the command just sent, so it must exceed `max_velocity` × the
+  robot's lag (measure the lag at bring-up); below that it fires on every move.
 
 ## Wire format (from the shipped config)
 

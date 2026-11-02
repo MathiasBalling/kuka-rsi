@@ -33,7 +33,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(b) = a.bind {
         cfg = cfg.bind(b);
     }
-    if cfg.ethernet.receive.iter().any(|e| e.tag == a.stop_channel) {
+    // An ONLYSEND config never answers, so a stop pulse would never reach the robot and
+    // `close()` would wait a second for a session end that does not come.
+    if !cfg.ethernet.onlysend && cfg.ethernet.receive.iter().any(|e| e.tag == a.stop_channel) {
         cfg = cfg.stop_channel(&a.stop_channel);
     }
     let drv = Driver::spawn(cfg)?;

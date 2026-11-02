@@ -18,7 +18,12 @@ class Faulted(Error):
 
 class Limits:
     @staticmethod
-    def kr10_defaults(max_velocity: float | None = None, max_acceleration: float | None = None) -> Limits: ...
+    def kr10_defaults(max_velocity: float | None = None, max_acceleration: float | None = ...) -> Limits:
+        """KR 10 R1100-2 axis ranges with conservative speeds; scalars apply to all joints.
+
+        `max_velocity` in rad/s (default 30°/s). `max_acceleration` in rad/s²: omitted, it keeps
+        the default of 300°/s²; `None` disables the acceleration clamp.
+        """
     position_min: NDArray[np.float64]
     position_max: NDArray[np.float64]
     max_velocity: NDArray[np.float64]
@@ -96,6 +101,8 @@ class Driver:
     ) -> None: ...
     def local_addr(self) -> str: ...
     def session(self) -> str: ...
+    def limits(self) -> Limits:
+        """The limits in force: the constructor's, or the last accepted `set_limits`."""
     def is_faulted(self) -> bool:
         """True once a `fault()` has been applied (with the next telegram after the call).
 

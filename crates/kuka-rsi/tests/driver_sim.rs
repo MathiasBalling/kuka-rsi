@@ -466,3 +466,15 @@ fn fault_is_visible_and_refuses_motion_until_the_next_session() {
     drv.wait_idle(Duration::from_secs(2)).unwrap();
     drv.close().unwrap();
 }
+
+#[test]
+fn limits_are_the_live_value_and_config_keeps_the_constructor_value() {
+    let drv = driver_without_stop_channel();
+    let initial = drv.config().limits;
+    assert_eq!(drv.limits(), initial);
+    let slower = initial.with_max_velocity_all(0.5);
+    drv.set_limits(slower).unwrap();
+    assert_eq!(drv.limits(), slower, "set_limits changes the live limits");
+    assert_eq!(drv.config().limits, initial, "config() keeps the constructor value");
+    drv.close().unwrap();
+}

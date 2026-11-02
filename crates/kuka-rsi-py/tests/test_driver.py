@@ -178,3 +178,38 @@ def test_driver_dealloc_does_not_deadlock():
     except subprocess.TimeoutExpired:
         pytest.fail("dropping a Driver without close() did not finish within 15 s (deadlock)")
     assert proc.returncode == 0, proc.stderr
+
+
+def test_bad_durations_raise_value_error():
+    drv = kuka_rsi.Driver(str(CONFIG), bind="127.0.0.1:0", rt_priority=False)
+    with pytest.raises(ValueError):
+        drv.wait_for_robot(-1.0)
+    with pytest.raises(ValueError):
+        drv.wait_idle(float("nan"))
+    with pytest.raises(ValueError):
+        drv.wait_for_robot(1e300)
+    drv.close()
+    with pytest.raises(ValueError):
+        kuka_rsi.Driver(str(CONFIG), bind="127.0.0.1:0", link_timeout=-0.5)
+    with pytest.raises(ValueError):
+        kuka_rsi.Driver(str(CONFIG), bind="127.0.0.1:0", wait=-1.0)
+    with pytest.raises(ValueError):
+        kuka_rsi.ControllerSim(str(CONFIG), target="127.0.0.1:9", cycle_ms=-4.0)
+
+
+def test_negative_dt_and_duration_raise_value_error():
+    drv, _sim = make()
+    q = drv.state().q_command
+    with pytest.raises(ValueError):
+        drv.stream(q, dt=-0.1)
+    with pytest.raises(ValueError):
+        drv.move_to(q, duration=-1.0)
+    drv.close()
+
+
+def test_limits_are_the_live_value():
+    drv = kuka_rsi.Driver(str(CONFIG), bind="127.0.0.1:0", rt_priority=False)
+    assert np.allclose(drv.limits().max_velocity, np.radians(30))
+    drv.set_limits(kuka_rsi.Limits.kr10_defaults(max_velocity=0.5))
+    assert np.allclose(drv.limits().max_velocity, 0.5)
+    drv.close()
