@@ -1,0 +1,35 @@
+[package]
+name = "kuka-rsi"
+description = "KUKA.RobotSensorInterface 5.0 (RSI) client: 4 ms UDP loop, joint streaming, simulator"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+quick-xml = { version = "0.42", features = ["serialize"] }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+socket2 = "0.6"
+crossbeam-queue = "0.3"
+triple_buffer = "8"
+rtrb = "0.3"
+arrayvec = { version = "0.7", features = ["serde"] }
+log = "0.4"
+thread-priority = "3"
+clap = { version = "4", features = ["derive"], optional = true }
+env_logger = { version = "0.11", optional = true }
+
+[features]
+default = []
+cli = ["dep:clap", "dep:env_logger"]
+
+[dev-dependencies]
+proptest = "1"
+
+[[bin]]
+name = "rsi-sim"
+required-features = ["cli"]
+
+[[bin]]
+name = "rsi-monitor"
+required-features = ["cli"]
