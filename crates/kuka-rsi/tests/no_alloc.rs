@@ -6,7 +6,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use kuka_rsi::config::EthernetConfig;
-use kuka_rsi::telegram::{Parser, RobotTelegram, Schema};
+use kuka_rsi::telegram::{Parser, RobotTelegram, Schema, SensorTelegram, Writer};
 
 struct Counting;
 
@@ -52,4 +52,18 @@ fn hot_paths_do_not_allocate() {
     }
     assert_eq!(allocations(), before, "Parser::parse must not allocate on the hot path");
     assert_eq!(tele.ipoc, 4004);
+
+    // Writer: into a pre-sized buffer, a hundred telegrams must not touch the allocator.
+    let writer = Writer::new(&schema);
+    let mut sen = SensorTelegram { ipoc: 4004, ..Default::default() };
+    sen.ak = [0.5, -1.25, 2.0, 0.0, 0.125, -0.0625];
+    sen.estr.push_str("Error: test");
+    let mut out = Vec::with_capacity(4096);
+    writer.write(&sen, &mut out);
+    let before = allocations();
+    for _ in 0..100 {
+        writer.write(&sen, &mut out);
+    }
+    assert_eq!(allocations(), before, "Writer::write must not allocate on the hot path");
+    assert!(out.ends_with(b"<IPOC>4004</IPOC></Sen>"));
 }
