@@ -198,6 +198,9 @@ impl EthernetConfig {
                     }
                 }
                 Index::Channel(n) => {
+                    if e.ty == ElementType::String {
+                        return Err(cfg_err(format!("{section} element {:?}: TYPE STRING is only valid for the DEF_EStr keyword", e.tag)));
+                    }
                     if seen[n as usize] {
                         return Err(cfg_err(format!("{section}: INDX {n} used twice")));
                     }
@@ -270,6 +273,16 @@ mod tests {
         assert!(EthernetConfig::from_str(&xml).unwrap_err().to_string().contains("TYPE"));
         let xml = with_receive(&format!("{AK}<ELEMENT TAG=\"DEF_Tech.T2\" TYPE=\"DOUBLE\" INDX=\"INTERNAL\" />"));
         assert!(EthernetConfig::from_str(&xml).unwrap_err().to_string().contains("DEF_Tech"));
+    }
+
+    #[test]
+    fn rejects_string_typed_channels() {
+        let xml = with_receive(&format!("{AK}<ELEMENT TAG=\"Msg\" TYPE=\"STRING\" INDX=\"7\" />"));
+        let err = EthernetConfig::from_str(&xml).unwrap_err().to_string();
+        assert!(err.contains("STRING"), "{err}");
+        let xml = "<ROOT><CONFIG><IP_NUMBER>127.0.0.1</IP_NUMBER><PORT>49152</PORT><SENTYPE>T</SENTYPE><ONLYSEND>TRUE</ONLYSEND></CONFIG>\
+                   <SEND><ELEMENTS><ELEMENT TAG=\"Name\" TYPE=\"STRING\" INDX=\"1\" /></ELEMENTS></SEND><RECEIVE><ELEMENTS></ELEMENTS></RECEIVE></ROOT>";
+        assert!(EthernetConfig::from_str(xml).unwrap_err().to_string().contains("STRING"));
     }
 
     #[test]

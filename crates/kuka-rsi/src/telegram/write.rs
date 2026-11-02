@@ -43,14 +43,12 @@ fn write_group(out: &mut Vec<u8>, tag: &str, names: &[&str], values: &[f64]) {
 
 fn write_value(out: &mut Vec<u8>, ty: ElementType, v: f64) {
     match ty {
-        ElementType::Double => {
+        // STRING channels are rejected by EthernetConfig validation; only DEF_EStr carries text.
+        ElementType::Double | ElementType::String => {
             let _ = write!(out, "{v:.6}");
         }
         ElementType::Long | ElementType::Bool => {
             let _ = write!(out, "{}", v.round() as i64);
-        }
-        ElementType::String => {
-            let _ = write!(out, "{v}");
         }
     }
 }
