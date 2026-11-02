@@ -4,6 +4,7 @@
 
 pub mod config;
 pub mod error;
+pub mod link;
 pub mod state;
 pub mod stats;
 pub mod telegram;
