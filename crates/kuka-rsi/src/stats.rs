@@ -66,18 +66,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stats_default_is_zero_and_serializable() {
-        let s = Stats::default();
-        assert_eq!(s.cycles, 0);
-        let json = serde_json_like(&s);
-        assert!(json.contains("cycles"));
-        let e = Event::Clamped(ClampKind::Velocity);
-        assert_eq!(e, Event::Clamped(ClampKind::Velocity));
-    }
+    fn stats_and_events_round_trip_through_json() {
+        let s = Stats { cycles: 12, reply_latency_mean_us: 37.5, queue_len: 3, robot_delay: 2, ..Default::default() };
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains("\"cycles\":12"), "{json}");
+        let back: Stats = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, s);
 
-    // The crate does not depend on serde_json; check the derive compiles by round-tripping
-    // through the Debug representation instead.
-    fn serde_json_like(s: &Stats) -> String {
-        format!("{s:?}")
+        for e in [
+            Event::RobotConnected { ipoc: 4004 },
+            Event::LateReply { latency_us: 4500 },
+            Event::TrackingError { error_rad: 0.05 },
+            Event::RtPriority { ok: false },
+            Event::Clamped(ClampKind::Velocity),
+            Event::LinkLost,
+        ] {
+            let json = serde_json::to_string(&e).unwrap();
+            let back: Event = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, e, "{json}");
+        }
     }
 }

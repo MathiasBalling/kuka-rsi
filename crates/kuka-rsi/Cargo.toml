@@ -25,6 +25,7 @@ cli = ["dep:clap", "dep:env_logger"]
 
 [dev-dependencies]
 proptest = "1"
+serde_json = "1"
 
 [[bin]]
 name = "rsi-sim"
