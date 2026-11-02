@@ -133,7 +133,7 @@ impl EthernetConfig {
     pub fn from_str(xml: &str) -> Result<Self> {
         let raw: RawRoot = quick_xml::de::from_str(xml).map_err(|e| cfg_err(format!("cannot parse Ethernet config XML: {e}")))?;
         let port: u16 = raw.config.port.trim().parse().map_err(|_| cfg_err(format!("PORT {:?} is not a number", raw.config.port)))?;
-        if port == 0 {
+        if !(1..=65534).contains(&port) {
             return Err(cfg_err("PORT must be 1..=65534"));
         }
         let onlysend = match raw.config.onlysend.as_deref().map(|s| s.trim().to_ascii_uppercase()) {
@@ -278,6 +278,14 @@ mod tests {
                    <SEND><ELEMENTS></ELEMENTS></SEND><RECEIVE><ELEMENTS></ELEMENTS></RECEIVE></ROOT>";
         let err = EthernetConfig::from_str(xml).unwrap_err().to_string();
         assert!(err.contains("PORT") || err.contains("ONLYSEND"), "{err}");
+    }
+
+    #[test]
+    fn rejects_port_above_range() {
+        let xml = "<ROOT><CONFIG><IP_NUMBER>1.2.3.4</IP_NUMBER><PORT>65535</PORT><SENTYPE>T</SENTYPE><ONLYSEND>TRUE</ONLYSEND></CONFIG>\
+                   <SEND><ELEMENTS></ELEMENTS></SEND><RECEIVE><ELEMENTS></ELEMENTS></RECEIVE></ROOT>";
+        let err = EthernetConfig::from_str(xml).unwrap_err().to_string();
+        assert!(err.contains("PORT"), "{err}");
     }
 
     #[test]
