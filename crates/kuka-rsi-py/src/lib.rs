@@ -74,17 +74,18 @@ pub struct PyLimits {
 impl PyLimits {
     /// KR 10 R1100-2 ranges with conservative speeds; scalars apply to all joints (rad/s, rad/s²).
     #[staticmethod]
-    #[pyo3(signature = (max_velocity=None, max_acceleration=None))]
+    // `max_acceleration`'s default is `Some(300°/s²)` (`300f64.to_radians()`, matching
+    // `Limits::kr10_defaults()`'s own default exactly), not `None`: pyo3 cannot tell
+    // "omitted" from "explicitly `None`" on a plain `Option<f64>`, and the KR10 default
+    // must keep the acceleration clamp on. Pass `max_acceleration=None` explicitly to
+    // disable the clamp; pass `max_acceleration=<value>` to set all six joints to it.
+    #[pyo3(signature = (max_velocity=None, max_acceleration=Some(300f64.to_radians())))]
     fn kr10_defaults(max_velocity: Option<f64>, max_acceleration: Option<f64>) -> PyLimits {
         let mut l = Limits::kr10_defaults();
         if let Some(v) = max_velocity {
             l = l.with_max_velocity_all(v);
         }
-        // Unlike `max_velocity`, the underlying field is itself `Option<[f64; 6]>` (`None`
-        // disables the clamp), so `max_acceleration`'s Python default of `None` maps
-        // directly onto that: passing nothing, or passing `None` explicitly, disables the
-        // acceleration clamp; only `Some(a)` enables it at `a` for all six joints.
-        l = l.with_max_acceleration_all(max_acceleration);
+        l = l.with_max_acceleration_all(max_acceleration); // Some(v) sets all joints, None disables
         PyLimits { inner: l }
     }
 
@@ -185,6 +186,10 @@ fn status_dict<'py>(py: Python<'py>, s: &SimStatus) -> PyResult<Bound<'py, PyDic
 pub struct PyControllerSim {
     handle: Option<SimHandle>,
     last_exit: Option<SimExit>,
+    /// Set when a `stop()` call takes the handle but `SimHandle::stop` itself errors (e.g.
+    /// the simulator thread panicked); a later `stop()`/`__exit__` call has no handle left
+    /// to retry against, so it re-raises this instead of silently reporting "Shutdown".
+    stop_error: Option<String>,
 }
 
 #[pymethods]
@@ -221,7 +226,7 @@ impl PyControllerSim {
             cfg.seed = s;
         }
         let handle = ControllerSim::spawn(cfg).map_err(to_py)?;
-        Ok(PyControllerSim { handle: Some(handle), last_exit: None })
+        Ok(PyControllerSim { handle: Some(handle), last_exit: None, stop_error: None })
     }
 
     fn local_addr(&self) -> PyResult<String> {
@@ -245,9 +250,17 @@ impl PyControllerSim {
     }
 
     fn stop(&mut self, py: Python<'_>) -> PyResult<String> {
+        if let Some(msg) = &self.stop_error {
+            return Err(Error::new_err(msg.clone()));
+        }
         if let Some(mut h) = self.handle.take() {
-            let e = py.detach(|| h.stop()).map_err(to_py)?;
-            self.last_exit = Some(e);
+            match py.detach(|| h.stop()) {
+                Ok(e) => self.last_exit = Some(e),
+                Err(e) => {
+                    self.stop_error = Some(e.to_string());
+                    return Err(to_py(e));
+                }
+            }
         }
         Ok(self.last_exit.map(exit_name).unwrap_or_else(|| "Shutdown".into()))
     }

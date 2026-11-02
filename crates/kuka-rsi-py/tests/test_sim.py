@@ -28,6 +28,11 @@ def test_limits_defaults_and_arrays():
     assert np.allclose(lim.max_acceleration, 3.0)
     assert lim.max_tracking_error > 0
 
+    default = kuka_rsi.Limits.kr10_defaults()
+    assert default.max_acceleration is not None
+    assert np.allclose(default.max_acceleration, np.radians(300))
+    assert np.allclose(kuka_rsi.Limits.kr10_defaults(max_acceleration=3.0).max_acceleration, 3.0)
+
 
 def test_exception_hierarchy():
     assert issubclass(kuka_rsi.LinkLost, kuka_rsi.Error)
