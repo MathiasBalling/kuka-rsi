@@ -61,4 +61,11 @@ RSI needs its own sensor network, separate from the EKI addresses (`172.31.1.x`)
    keeps running (it must reconnect and re-capture the start pose).
 
 Read the machine data (`$SOFTN_END`, `$SOFTP_END`, axis speeds) from the pendant and
-put them into `Limits` and the `AxisCorr`/`AxisCorrMon` parameters before step 3.
+put them into `Limits` before step 3. The driver enforces the true joint limits
+(`position_min/max`) on every target and every cycle. `AxisCorr` and `AxisCorrMon` bound
+something else: the correction relative to the start pose (`AK = q - q_start`), not the
+joint angle. They are therefore set to the axis range widths (`AxisCorr` ±340°, ±235°,
+±276°, ±370°, ±240°, ±700° for A1 to A6; `AxisCorrMon` the same widths), so they never
+bind before the driver's own joint limits, whatever the start pose. If the machine data
+differs from the data sheet, set them to the new widths (`max - min`) and keep
+`Limits.max_correction` equal to them.

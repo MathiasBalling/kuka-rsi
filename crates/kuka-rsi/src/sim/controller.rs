@@ -52,8 +52,10 @@ impl SimConfig {
             cycle: Duration::from_millis(4),
             timeout: 100,
             q_start_deg: [0.0, -90.0, 90.0, 0.0, 90.0, 0.0],
-            axiscorr_lower_deg: [-170.0, -190.0, -120.0, -185.0, -120.0, -350.0],
-            axiscorr_upper_deg: [170.0, 45.0, 156.0, 185.0, 120.0, 350.0],
+            // As in the shipped contexts: `AK` is relative to the start pose, so the bounds are
+            // the axis range widths.
+            axiscorr_lower_deg: [-340.0, -235.0, -276.0, -370.0, -240.0, -700.0],
+            axiscorr_upper_deg: [340.0, 235.0, 276.0, 370.0, 240.0, 700.0],
             axiscorrmon_deg: [340.0, 235.0, 276.0, 370.0, 240.0, 700.0],
             lag_cycles: 0.0,
             max_velocity_deg_s: None,

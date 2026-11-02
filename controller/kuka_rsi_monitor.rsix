@@ -32,18 +32,18 @@
             <Input InIdx="5" OutObjId="RSI" OutIdx="5" />
          </Inputs>
          <Parameters>
-            <Parameter Name="LowerLimA1" ParamId="0" ParamValue="-170" />
-            <Parameter Name="LowerLimA2" ParamId="1" ParamValue="-190" />
-            <Parameter Name="LowerLimA3" ParamId="2" ParamValue="-120" />
-            <Parameter Name="LowerLimA4" ParamId="3" ParamValue="-185" />
-            <Parameter Name="LowerLimA5" ParamId="4" ParamValue="-120" />
-            <Parameter Name="LowerLimA6" ParamId="5" ParamValue="-350" />
-            <Parameter Name="UpperLimA1" ParamId="6" ParamValue="170" />
-            <Parameter Name="UpperLimA2" ParamId="7" ParamValue="45" />
-            <Parameter Name="UpperLimA3" ParamId="8" ParamValue="156" />
-            <Parameter Name="UpperLimA4" ParamId="9" ParamValue="185" />
-            <Parameter Name="UpperLimA5" ParamId="10" ParamValue="120" />
-            <Parameter Name="UpperLimA6" ParamId="11" ParamValue="350" />
+            <Parameter Name="LowerLimA1" ParamId="0" ParamValue="-340" />
+            <Parameter Name="LowerLimA2" ParamId="1" ParamValue="-235" />
+            <Parameter Name="LowerLimA3" ParamId="2" ParamValue="-276" />
+            <Parameter Name="LowerLimA4" ParamId="3" ParamValue="-370" />
+            <Parameter Name="LowerLimA5" ParamId="4" ParamValue="-240" />
+            <Parameter Name="LowerLimA6" ParamId="5" ParamValue="-700" />
+            <Parameter Name="UpperLimA1" ParamId="6" ParamValue="340" />
+            <Parameter Name="UpperLimA2" ParamId="7" ParamValue="235" />
+            <Parameter Name="UpperLimA3" ParamId="8" ParamValue="276" />
+            <Parameter Name="UpperLimA4" ParamId="9" ParamValue="370" />
+            <Parameter Name="UpperLimA5" ParamId="10" ParamValue="240" />
+            <Parameter Name="UpperLimA6" ParamId="11" ParamValue="700" />
          </Parameters>
       </RsiObject>
       <RsiObject ObjTypeId="82" ObjType="AxisCorrMon" ObjId="AxisCorrMon_1">
@@ -2441,18 +2441,18 @@
             <Input Name="CorrA6" SourceObject="RSI" SourcePort="Out6" Points="454.516666666667,169.5;462.516666666667,169.5;470.516666666667,169.5;470.516666666667,169.5;488,169.5;504,169.5" />
          </Inputs>
          <Parameters>
-            <DoubleParameter Name="LowerLimA1" Value="-170" />
-            <DoubleParameter Name="LowerLimA2" Value="-190" />
-            <DoubleParameter Name="LowerLimA3" Value="-120" />
-            <DoubleParameter Name="LowerLimA4" Value="-185" />
-            <DoubleParameter Name="LowerLimA5" Value="-120" />
-            <DoubleParameter Name="LowerLimA6" Value="-350" />
-            <DoubleParameter Name="UpperLimA1" Value="170" />
-            <DoubleParameter Name="UpperLimA2" Value="45" />
-            <DoubleParameter Name="UpperLimA3" Value="156" />
-            <DoubleParameter Name="UpperLimA4" Value="185" />
-            <DoubleParameter Name="UpperLimA5" Value="120" />
-            <DoubleParameter Name="UpperLimA6" Value="350" />
+            <DoubleParameter Name="LowerLimA1" Value="-340" />
+            <DoubleParameter Name="LowerLimA2" Value="-235" />
+            <DoubleParameter Name="LowerLimA3" Value="-276" />
+            <DoubleParameter Name="LowerLimA4" Value="-370" />
+            <DoubleParameter Name="LowerLimA5" Value="-240" />
+            <DoubleParameter Name="LowerLimA6" Value="-700" />
+            <DoubleParameter Name="UpperLimA1" Value="340" />
+            <DoubleParameter Name="UpperLimA2" Value="235" />
+            <DoubleParameter Name="UpperLimA3" Value="276" />
+            <DoubleParameter Name="UpperLimA4" Value="370" />
+            <DoubleParameter Name="UpperLimA5" Value="240" />
+            <DoubleParameter Name="UpperLimA6" Value="700" />
          </Parameters>
       </Construct>
       <Construct Name="AxisCorrMon_1" BlueprintName="AxisCorrMon" BlueprintCollection="RSI" Location="756,0">
