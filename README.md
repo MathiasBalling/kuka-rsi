@@ -1,0 +1,82 @@
+# kuka-rsi
+
+KUKA.RobotSensorInterface 5.0 client in Rust with Python bindings, for the KR10
+R1100-2 on a KR C5 micro (KSS 8.7). One real-time thread answers the robot's 4 ms
+telegrams; callers stream absolute joint targets and read joint state.
+
+Design: `docs/design.md`.
+Controller files and bring-up: `controller/README.md`.
+
+## Layout
+
+- `crates/kuka-rsi`: the library, the `rsi-sim` and `rsi-monitor` binaries (feature
+  `cli`), examples and tests.
+- `crates/kuka-rsi-py`: the `kuka_rsi` Python package (PyO3 + maturin), a member of the
+  repository's uv workspace.
+- `controller/`: files for the robot.
+
+## Build and test
+
+```bash
+cargo test --manifest-path kuka-rsi/Cargo.toml -p kuka-rsi                     # Rust
+cargo test --manifest-path kuka-rsi/Cargo.toml -p kuka-rsi --features cli --test cli
+cargo test --manifest-path kuka-rsi/Cargo.toml -p kuka-rsi --test no_alloc      # allocation proof
+cargo test --manifest-path kuka-rsi/Cargo.toml -p kuka-rsi --release --test soak -- --ignored --nocapture
+uv sync --package kuka-rsi                                                     # Python (add --reinstall-package kuka-rsi after Rust changes)
+uv run --package kuka-rsi pytest kuka-rsi/crates/kuka-rsi-py/tests
+```
+
+## Try it without the robot
+
+```bash
+cargo run --manifest-path kuka-rsi/Cargo.toml -p kuka-rsi --features cli --bin rsi-sim -- \
+    --config kuka-rsi/controller/kuka_rsi_ethernet.xml --target 127.0.0.1:49152 --lag 3
+cargo run --manifest-path kuka-rsi/Cargo.toml -p kuka-rsi --example stream_trajectory -- \
+    kuka-rsi/controller/kuka_rsi_ethernet.xml 127.0.0.1:49152
+```
+
+## Python
+
+```python
+import numpy as np
+from kuka_rsi import Driver, Limits
+
+limits = Limits.kr10_defaults(max_velocity=np.radians(30))
+with Driver("kuka-rsi/controller/kuka_rsi_ethernet.xml", limits=limits, stop_channel="MoveStop") as robot:
+    state = robot.state()                       # .q, .q_setpoint, .tcp, .torque (numpy), .t, .ipoc, .delay
+    robot.move_to(state.q + np.radians([0, 0, 0, 0, 0, 2]), duration=2.0, block=True)
+    for chunk in policy():                      # (n, 6) absolute joint targets, radians
+        robot.stream(chunk, dt=0.1, replace=True)
+    for s in robot.drain_log():                 # every 4 ms cycle since the last call
+        ...
+    print(robot.stats())
+```
+
+Units: radians, metres, seconds in the API; degrees and millimetres only on the wire.
+`stream` spreads each target over the cycles between points under the velocity and
+acceleration limits; an empty queue holds position; playback follows the pendant
+override and pauses when the program is stopped. A `stream` call is accepted whole or
+rejected before anything is queued (`LimitError`); `move_to(block=True)` and `wait_idle`
+raise `TimeoutError` if the robot cannot settle in time (a paused program, a limit
+holding the command short). `Limits.kr10_defaults()` keeps an acceleration limit of
+300°/s² with braking look-ahead; `max_acceleration=None` disables it.
+
+## Wire format (from the shipped config)
+
+Robot to PC every 4 ms:
+
+```xml
+<Rob TYPE="KukaRsi"><RIst X=".." Y=".." Z=".." A=".." B=".." C=".." /><RSol .../>
+<AIPos A1=".." ... A6=".." /><ASPos .../><Delay D="0" /><GearTorque A1=".." ... />
+<ProgStatus R="3" /><OvPro R="100" /><IPOC>123645634563</IPOC></Rob>
+```
+
+PC to robot, same IPOC, within the cycle:
+
+```xml
+<Sen Type="KukaRsi"><AK A1="0.000000" ... A6="0.000000" /><MoveStop>0</MoveStop><EStr/><IPOC>123645634563</IPOC></Sen>
+```
+
+`AK` is the absolute correction from the setpoint at `RSI_ON` (`q_start`, captured from
+the first telegram's `ASPos`), so `AK = q_target - q_start` in degrees. `MoveStop` ends
+`RSI_MOVECORR()`; `<EStr>Error: ...</EStr>` stops the robot.
