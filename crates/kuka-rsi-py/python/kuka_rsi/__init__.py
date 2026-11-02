@@ -3,6 +3,16 @@
 The real-time loop lives in Rust (`kuka_rsi._core`); this package only re-exports it.
 """
 
-from kuka_rsi._core import ControllerSim, Error, LimitError, Limits, LinkLost, ProtocolError
+from kuka_rsi._core import (
+    ControllerSim,
+    Driver,
+    Error,
+    LimitError,
+    Limits,
+    LinkLost,
+    ProtocolError,
+    RobotState,
+    Stats,
+)
 
-__all__ = ["ControllerSim", "Error", "LimitError", "Limits", "LinkLost", "ProtocolError"]
+__all__ = ["ControllerSim", "Driver", "Error", "LimitError", "Limits", "LinkLost", "ProtocolError", "RobotState", "Stats"]
