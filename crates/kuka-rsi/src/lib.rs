@@ -4,6 +4,7 @@
 
 pub mod config;
 pub mod control;
+pub mod driver;
 pub mod error;
 pub mod link;
 pub mod sim;
@@ -11,4 +12,5 @@ pub mod state;
 pub mod stats;
 pub mod telegram;
 
+pub use driver::Driver;
 pub use error::{Error, Result};

@@ -17,6 +17,8 @@ pub struct Stats {
     /// Older datagrams discarded because a newer one was already queued.
     pub skipped_datagrams: u64,
     pub parse_errors: u64,
+    /// Socket errors on the real-time thread (receive or reply).
+    pub io_errors: u64,
     pub sentype_mismatches: u64,
     pub position_clamps: u64,
     pub velocity_clamps: u64,
@@ -48,6 +50,7 @@ pub enum Event {
     LinkLost,
     LateReply { latency_us: u64 },
     ParseError,
+    IoError,
     SentypeMismatch,
     Clamped(ClampKind),
     Starved,
