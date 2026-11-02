@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use arrayvec::{ArrayString, ArrayVec};
 
-use super::{Blend, ClampCounts, Command, Interpolator, Limiter, Segment};
+use super::{Blend, ClampCounts, Command, Interpolator, Limiter, Segment, MAX_QUEUE};
 use crate::config::Limits;
 use crate::state::{deg2rad6, rad2deg6, RobotState, SessionState};
 use crate::stats::{ClampKind, Event};
@@ -30,12 +30,18 @@ pub struct Session {
     last_command: [f64; 6],
     tracking_alarm: bool,
     starved_alarm: bool,
+    /// One rising-edge latch per `ClampKind` (position, velocity, acceleration, correction),
+    /// so a continuous clamp burst emits a single `Event::Clamped` instead of one per cycle.
+    clamp_active: [bool; 4],
     prev_counts: ClampCounts,
     events: ArrayVec<Event, 16>,
 }
 
 impl Session {
     pub fn new(limits: Limits, cycle: Duration, stop_slot: Option<usize>) -> Session {
+        if let Some(s) = stop_slot {
+            assert!(s < crate::telegram::MAX_SLOTS, "stop slot {s} outside 0..{}", crate::telegram::MAX_SLOTS);
+        }
         Session {
             state: SessionState::Listening,
             limits,
@@ -52,6 +58,7 @@ impl Session {
             last_command: [0.0; 6],
             tracking_alarm: false,
             starved_alarm: false,
+            clamp_active: [false; 4],
             prev_counts: ClampCounts::default(),
             events: ArrayVec::new(),
         }
@@ -94,19 +101,22 @@ impl Session {
         let _ = self.events.try_push(e);
     }
 
-    /// First telegram of a session: capture the start pose, reset playback.
+    /// First telegram of a session: capture the start pose (programmed setpoint) and hold the
+    /// robot at its actual position.
     pub fn start(&mut self, tele: &RobotTelegram) {
         self.q_start = deg2rad6(&tele.aspos);
-        self.interp.reset(self.q_start);
-        self.limiter.reset(self.q_start);
+        let q_actual = deg2rad6(&tele.aipos);
+        self.interp.reset(q_actual);
+        self.limiter.reset(q_actual);
         self.frozen = None;
         self.estr.clear();
         self.estr_cycles = 0;
         self.stop_cycles = 0;
         self.cycles = 0;
-        self.last_command = self.q_start;
+        self.last_command = q_actual;
         self.tracking_alarm = false;
         self.starved_alarm = false;
+        self.clamp_active = [false; 4];
         self.state = SessionState::Active;
         self.event(Event::RobotConnected { ipoc: tele.ipoc });
     }
@@ -114,7 +124,7 @@ impl Session {
     /// The link went silent: drop the queue and wait for a new session.
     pub fn lost(&mut self) {
         self.state = SessionState::Lost;
-        self.interp.replace();
+        self.interp.reset(self.limiter.last().unwrap_or(self.q_start));
         self.frozen = None;
         self.event(Event::LinkLost);
     }
@@ -123,13 +133,18 @@ impl Session {
         match cmd {
             Command::Stream { points, cycles_per_point, replace } => {
                 if self.frozen.is_some() {
-                    return Err(Error::Limit("driver faulted: targets are ignored until the next session".into()));
+                    return Err(Error::Faulted);
                 }
                 for p in &points {
                     self.limits.check_position(p)?;
                 }
+                // Accept the chunk whole or reject it whole: never park part of it and drop the rest.
+                let used = if replace { 0 } else { self.interp.len() };
+                if used + points.len() > MAX_QUEUE {
+                    return Err(Error::QueueFull);
+                }
                 if replace {
-                    self.interp.replace();
+                    self.interp.reset(self.limiter.last().unwrap_or(self.q_start));
                 }
                 for p in points {
                     if !self.interp.push(Segment { q_end: p, cycles: cycles_per_point.max(1), blend: Blend::Linear }) {
@@ -140,17 +155,17 @@ impl Session {
             }
             Command::MoveTo { q, cycles } => {
                 if self.frozen.is_some() {
-                    return Err(Error::Limit("driver faulted: targets are ignored until the next session".into()));
+                    return Err(Error::Faulted);
                 }
                 self.limits.check_position(&q)?;
-                self.interp.replace();
+                self.interp.reset(self.limiter.last().unwrap_or(self.q_start));
                 if !self.interp.push(Segment { q_end: q, cycles: cycles.max(1), blend: Blend::Quintic }) {
                     return Err(Error::QueueFull);
                 }
                 Ok(())
             }
             Command::Hold => {
-                self.interp.replace();
+                self.interp.reset(self.limiter.last().unwrap_or(self.q_start));
                 Ok(())
             }
             Command::Fault(msg) => {
@@ -159,12 +174,16 @@ impl Session {
                 let room = self.estr.capacity() - self.estr.len();
                 self.estr.push_str(&msg[..msg.len().min(room)]);
                 self.estr_cycles = MESSAGE_CYCLES;
-                self.frozen = Some(self.limiter.last().unwrap_or(self.q_start));
-                self.interp.replace();
+                let last = self.limiter.last().unwrap_or(self.q_start);
+                self.frozen = Some(last);
+                self.interp.reset(last);
                 self.event(Event::Fault);
                 Ok(())
             }
             Command::Notify(msg) => {
+                if self.frozen.is_some() {
+                    return Err(Error::Faulted);
+                }
                 self.estr.clear();
                 self.estr.push_str(&msg);
                 self.estr_cycles = MESSAGE_CYCLES;
@@ -216,17 +235,17 @@ impl Session {
         };
         let c = self.limiter.counts();
         let p = self.prev_counts;
-        if c.position > p.position {
-            self.event(Event::Clamped(ClampKind::Position));
-        }
-        if c.velocity > p.velocity {
-            self.event(Event::Clamped(ClampKind::Velocity));
-        }
-        if c.acceleration > p.acceleration {
-            self.event(Event::Clamped(ClampKind::Acceleration));
-        }
-        if c.correction > p.correction {
-            self.event(Event::Clamped(ClampKind::Correction));
+        let hits = [c.position > p.position, c.velocity > p.velocity, c.acceleration > p.acceleration, c.correction > p.correction];
+        let kinds = [ClampKind::Position, ClampKind::Velocity, ClampKind::Acceleration, ClampKind::Correction];
+        for i in 0..4 {
+            if hits[i] {
+                if !self.clamp_active[i] {
+                    self.clamp_active[i] = true;
+                    self.event(Event::Clamped(kinds[i]));
+                }
+            } else {
+                self.clamp_active[i] = false;
+            }
         }
         self.prev_counts = c;
 
@@ -385,7 +404,7 @@ mod tests {
         let after = run(&mut s, &t, 1);
         assert!(after.estr.is_empty());
         assert_eq!(after.ak, frozen.ak, "still frozen");
-        assert!(s.apply(stream(q, 10, false)).is_err(), "targets rejected after a fault");
+        assert!(matches!(s.apply(stream(q, 10, false)), Err(Error::Faulted)), "targets rejected after a fault");
         assert!(s.take_events().contains(&Event::Fault));
     }
 
@@ -536,5 +555,101 @@ mod tests {
         run(&mut s, &t, 1);
         assert_eq!(s.starved(), 1);
         assert!(s.take_events().contains(&Event::Starved));
+    }
+
+    #[test]
+    fn clamp_event_fires_once_per_burst() {
+        let (mut s, t) = started();
+        let mut q = s.q_start();
+        q[0] += 0.2;
+        s.apply(stream(q, 1, false)).unwrap();
+        let mut out = SensorTelegram::default();
+        for _ in 0..10 {
+            s.step(&t, &state(&t), &mut out);
+        }
+        let events = s.take_events();
+        let clamps = events.iter().filter(|e| matches!(e, Event::Clamped(ClampKind::Velocity))).count();
+        assert_eq!(clamps, 1, "{events:?}");
+    }
+
+    #[test]
+    fn hold_stops_at_the_last_command() {
+        let (mut s, t) = started();
+        let mut q = s.q_start();
+        q[0] += 0.2;
+        s.apply(stream(q, 1, false)).unwrap();
+        let out = run(&mut s, &t, 10);
+        assert!((out.ak[0] - 0.04f64.to_degrees()).abs() < 1e-9, "{:?}", out.ak);
+        s.apply(Command::Hold).unwrap();
+        let out = run(&mut s, &t, 20);
+        assert!((out.ak[0] - 0.04f64.to_degrees()).abs() < 1e-9, "{:?}", out.ak);
+    }
+
+    #[test]
+    fn partial_chunk_is_rejected_whole() {
+        let (mut s, _) = started();
+        let q = s.q_start();
+        let mut full = ArrayVec::new();
+        for _ in 0..MAX_CHUNK {
+            full.push(q);
+        }
+        for _ in 0..15 {
+            s.apply(Command::Stream { points: full.clone(), cycles_per_point: 1, replace: false }).unwrap();
+        }
+        let mut partial = ArrayVec::new();
+        for _ in 0..40 {
+            partial.push(q);
+        }
+        s.apply(Command::Stream { points: partial, cycles_per_point: 1, replace: false }).unwrap();
+        assert_eq!(s.queue_len(), 1000);
+        assert!(matches!(s.apply(Command::Stream { points: full.clone(), cycles_per_point: 1, replace: false }), Err(Error::QueueFull)));
+        assert_eq!(s.queue_len(), 1000);
+    }
+
+    #[test]
+    fn notify_after_fault_is_rejected() {
+        let (mut s, t) = started();
+        s.apply(Command::Fault(ArrayString::from("x").unwrap())).unwrap();
+        assert!(matches!(s.apply(Command::Notify(ArrayString::from("y").unwrap())), Err(Error::Faulted)));
+        let out = run(&mut s, &t, 1);
+        assert_eq!(out.estr.as_str(), "Error: x");
+    }
+
+    #[test]
+    fn fresh_session_and_hold_do_not_starve() {
+        let (mut s, t) = started();
+        run(&mut s, &t, 5);
+        assert_eq!(s.starved(), 0);
+        assert!(!s.take_events().iter().any(|e| matches!(e, Event::Starved)));
+        let mut q = s.q_start();
+        q[0] += 0.001;
+        s.apply(stream(q, 2, false)).unwrap();
+        run(&mut s, &t, 2);
+        s.apply(Command::Hold).unwrap();
+        run(&mut s, &t, 5);
+        assert_eq!(s.starved(), 0);
+        assert!(!s.take_events().iter().any(|e| matches!(e, Event::Starved)));
+    }
+
+    #[test]
+    #[should_panic]
+    fn stop_slot_out_of_range_panics() {
+        Session::new(Limits::kr10_defaults(), Duration::from_millis(4), Some(64));
+    }
+
+    #[test]
+    fn start_holds_the_actual_position() {
+        let mut s = session();
+        let mut aipos = START_DEG;
+        aipos[0] += 0.5;
+        let t = tele(START_DEG, aipos, 1000);
+        s.start(&t);
+        let mut out = SensorTelegram::default();
+        let q = s.step(&t, &state(&t), &mut out);
+        assert_eq!(q, deg2rad6(&aipos));
+        assert!((out.ak[0] - 0.5).abs() < 1e-9, "{:?}", out.ak);
+        for i in 1..6 {
+            assert!(out.ak[i].abs() < 1e-9, "{:?}", out.ak);
+        }
     }
 }

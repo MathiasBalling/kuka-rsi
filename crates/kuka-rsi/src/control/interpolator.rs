@@ -23,12 +23,15 @@ pub struct Interpolator {
     current: [f64; 6],
     progress: f64,
     starved: u64,
+    /// Set once a segment has been pushed; cleared by `reset`/`replace`. Guards `starved`
+    /// against counting an empty queue that was never given anything to play.
+    armed: bool,
 }
 
 impl Interpolator {
     pub fn new(q0: [f64; 6]) -> Interpolator {
         let filler = Segment { q_end: q0, cycles: 1, blend: Blend::Linear };
-        Interpolator { ring: vec![filler; MAX_QUEUE], head: 0, len: 0, seg_start: q0, current: q0, progress: 0.0, starved: 0 }
+        Interpolator { ring: vec![filler; MAX_QUEUE], head: 0, len: 0, seg_start: q0, current: q0, progress: 0.0, starved: 0, armed: false }
     }
 
     pub fn reset(&mut self, q0: [f64; 6]) {
@@ -37,6 +40,7 @@ impl Interpolator {
         self.seg_start = q0;
         self.current = q0;
         self.progress = 0.0;
+        self.armed = false;
     }
 
     pub fn push(&mut self, seg: Segment) -> bool {
@@ -46,6 +50,7 @@ impl Interpolator {
         let idx = (self.head + self.len) % MAX_QUEUE;
         self.ring[idx] = seg;
         self.len += 1;
+        self.armed = true;
         true
     }
 
@@ -59,6 +64,7 @@ impl Interpolator {
         self.len = 0;
         self.seg_start = self.current;
         self.progress = 0.0;
+        self.armed = false;
     }
 
     pub fn len(&self) -> usize {
@@ -80,7 +86,7 @@ impl Interpolator {
     /// Advance by `rate` cycles and return the position on the path.
     pub fn step(&mut self, rate: f64) -> [f64; 6] {
         if self.len == 0 {
-            if rate > 0.0 {
+            if self.armed && rate > 0.0 {
                 self.starved += 1;
             }
             return self.current;
