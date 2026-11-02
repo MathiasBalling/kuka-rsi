@@ -1,7 +1,9 @@
-//! Parser for `<Rob>` telegrams. No allocation after construction: `Reader::read_event`
-//! borrows events straight from the input slice and values land in fixed arrays.
-
-use quick_xml::events::{BytesStart, Event};
+//! Parser for `<Rob>` telegrams. A hand-written tokenizer walks the small XML subset
+//! RSI telegrams use; no allocation on the parse path. (quick-xml stays a crate
+//! dependency for config parsing and the simulator, but not this hot path: measured
+//! with a counting allocator, its own internal Start/End tag-name bookkeeping had to
+//! be rebuilt from scratch on every telegram, since it is tied to each call's
+//! borrowed input and quick-xml exposes no way to reuse it across calls.)
 
 use super::schema::{Keyword, RobElement, Schema, MAX_SLOTS};
 
@@ -53,6 +55,190 @@ pub enum ParseError {
     Number(String),
 }
 
+/// Token of the RSI telegram subset of XML: one root, one level of children, attributes
+/// in double or single quotes, text content, self-closing tags. `<?...?>` declarations and
+/// `<!-- -->` comments are skipped. Entity references are not decoded (the robot sends numbers).
+enum Token<'a> {
+    /// `<name attrs>` or `<name attrs/>`; `attrs` is the raw text between the name and `>`/`/>`.
+    Start { name: &'a str, attrs: &'a str, empty: bool },
+    /// The parser only tracks nesting depth, not element identity, so `name` is not
+    /// read back; it is still captured so a future strict end-tag check can use it.
+    End {
+        #[allow(dead_code)]
+        name: &'a str,
+    },
+    Text(&'a str),
+    Eof,
+}
+
+/// Validates and slices the raw attribute text of a start tag as UTF-8.
+fn raw(b: &[u8]) -> Result<&str, ParseError> {
+    std::str::from_utf8(b).map_err(|_| ParseError::Xml("attribute text is not UTF-8".into()))
+}
+
+struct Tokenizer<'a> {
+    src: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> Tokenizer<'a> {
+    fn new(src: &'a [u8]) -> Self {
+        Tokenizer { src, pos: 0 }
+    }
+
+    fn peek(&self) -> Option<u8> {
+        self.src.get(self.pos).copied()
+    }
+
+    fn skip_ws(&mut self) {
+        while matches!(self.peek(), Some(b) if b.is_ascii_whitespace()) {
+            self.pos += 1;
+        }
+    }
+
+    fn expect(&mut self, b: u8) -> Result<(), ParseError> {
+        if self.peek() == Some(b) {
+            self.pos += 1;
+            Ok(())
+        } else {
+            Err(ParseError::Xml(format!("expected {:?} at byte {}", b as char, self.pos)))
+        }
+    }
+
+    /// Name chars: ASCII alphanumerics, '_', '.', '-', ':'. Empty name is an error.
+    fn read_name(&mut self) -> Result<&'a str, ParseError> {
+        let start = self.pos;
+        while matches!(self.peek(), Some(b) if b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-' | b':')) {
+            self.pos += 1;
+        }
+        if self.pos == start {
+            return Err(ParseError::Xml(format!("expected a name at byte {start}")));
+        }
+        std::str::from_utf8(&self.src[start..self.pos]).map_err(|_| ParseError::Xml("name is not UTF-8".into()))
+    }
+
+    fn find(&self, needle: &[u8]) -> Option<usize> {
+        self.src[self.pos..].windows(needle.len()).position(|w| w == needle)
+    }
+
+    fn next(&mut self) -> Result<Token<'a>, ParseError> {
+        loop {
+            self.skip_ws();
+            let Some(b) = self.peek() else { return Ok(Token::Eof) };
+            if b != b'<' {
+                // text up to the next '<', trailing whitespace trimmed
+                let start = self.pos;
+                while matches!(self.peek(), Some(c) if c != b'<') {
+                    self.pos += 1;
+                }
+                let text = std::str::from_utf8(&self.src[start..self.pos]).map_err(|_| ParseError::Xml("text is not UTF-8".into()))?;
+                return Ok(Token::Text(text.trim_end()));
+            }
+            let rest = &self.src[self.pos..];
+            if rest.starts_with(b"<?") {
+                let end = self.find(b"?>").ok_or_else(|| ParseError::Xml("unterminated declaration".into()))?;
+                self.pos += end + 2;
+                continue;
+            }
+            if rest.starts_with(b"<!--") {
+                let end = self.find(b"-->").ok_or_else(|| ParseError::Xml("unterminated comment".into()))?;
+                self.pos += end + 3;
+                continue;
+            }
+            if rest.starts_with(b"</") {
+                self.pos += 2;
+                let name = self.read_name()?;
+                self.skip_ws();
+                self.expect(b'>')?;
+                return Ok(Token::End { name });
+            }
+            self.pos += 1;
+            let name = self.read_name()?;
+            let attr_start = self.pos;
+            loop {
+                self.skip_ws();
+                match self.peek() {
+                    None => return Err(ParseError::Xml(format!("unterminated start tag <{name}>"))),
+                    Some(b'/') => {
+                        let attr_end = self.pos;
+                        self.pos += 1;
+                        self.expect(b'>')?;
+                        return Ok(Token::Start { name, attrs: raw(&self.src[attr_start..attr_end])?, empty: true });
+                    }
+                    Some(b'>') => {
+                        let attr_end = self.pos;
+                        self.pos += 1;
+                        return Ok(Token::Start { name, attrs: raw(&self.src[attr_start..attr_end])?, empty: false });
+                    }
+                    Some(_) => {
+                        // skip one attribute: name, '=', quoted value
+                        self.read_name()?;
+                        self.skip_ws();
+                        self.expect(b'=')?;
+                        self.skip_ws();
+                        let q = match self.peek() {
+                            Some(q @ (b'"' | b'\'')) => q,
+                            _ => return Err(ParseError::Xml(format!("attribute value in <{name}> is not quoted"))),
+                        };
+                        self.pos += 1;
+                        let close = self.src[self.pos..]
+                            .iter()
+                            .position(|c| *c == q)
+                            .ok_or_else(|| ParseError::Xml(format!("unterminated attribute value in <{name}>")))?;
+                        self.pos += close + 1;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Iterates `name="value"` pairs of a raw attribute region (already validated by the tokenizer).
+struct Attrs<'a> {
+    src: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> Iterator for Attrs<'a> {
+    type Item = (&'a str, &'a str);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while matches!(self.src.get(self.pos), Some(b) if b.is_ascii_whitespace()) {
+            self.pos += 1;
+        }
+        if self.pos >= self.src.len() {
+            return None;
+        }
+        let name_start = self.pos;
+        while matches!(self.src.get(self.pos), Some(b) if !b.is_ascii_whitespace() && *b != b'=') {
+            self.pos += 1;
+        }
+        let name_end = self.pos;
+        while matches!(self.src.get(self.pos), Some(b) if b.is_ascii_whitespace()) {
+            self.pos += 1;
+        }
+        if self.src.get(self.pos) != Some(&b'=') {
+            return None;
+        }
+        self.pos += 1;
+        while matches!(self.src.get(self.pos), Some(b) if b.is_ascii_whitespace()) {
+            self.pos += 1;
+        }
+        let q = *self.src.get(self.pos)?;
+        self.pos += 1;
+        let val_start = self.pos;
+        while matches!(self.src.get(self.pos), Some(b) if *b != q) {
+            self.pos += 1;
+        }
+        let val_end = self.pos;
+        self.pos += 1; // skip closing quote
+        // from_utf8 cannot fail here: the tokenizer already validated these same bytes as UTF-8.
+        let name = std::str::from_utf8(&self.src[name_start..name_end]).ok()?;
+        let value = std::str::from_utf8(&self.src[val_start..val_end]).ok()?;
+        Some((name, value))
+    }
+}
+
 /// Reusable parser bound to one schema.
 pub struct Parser {
     schema: Schema,
@@ -84,23 +270,16 @@ impl Parser {
         self.unknown
     }
 
-    fn check_root(&self, e: &BytesStart<'_>) -> Result<(), ParseError> {
-        let qname = e.name();
-        let name: &str = qname.as_ref();
+    fn check_root(&self, name: &str, attrs: &str) -> Result<(), ParseError> {
         if name != "Rob" {
             return Err(ParseError::Root(name.to_string()));
         }
         let mut saw_type = false;
-        let mut attrs = e.attributes();
-        attrs.with_checks(false); // trusted wire data; avoids the per-call duplicate-name check allocation
-        for a in attrs {
-            let a = a.map_err(|err| ParseError::Xml(err.to_string()))?;
-            let key: &str = a.key.as_ref();
+        for (key, value) in (Attrs { src: attrs.as_bytes(), pos: 0 }) {
             if key.eq_ignore_ascii_case("TYPE") {
                 saw_type = true;
-                let got: &str = a.value.as_ref();
-                if got != self.schema.sentype {
-                    return Err(ParseError::Sentype { got: got.to_string(), want: self.schema.sentype.clone() });
+                if value != self.schema.sentype {
+                    return Err(ParseError::Sentype { got: value.to_string(), want: self.schema.sentype.clone() });
                 }
             }
         }
@@ -118,17 +297,13 @@ impl Parser {
         })
     }
 
-    fn read_attrs(&self, idx: usize, e: &BytesStart<'_>, out: &mut RobotTelegram) -> Result<(), ParseError> {
+    fn read_attrs(&self, idx: usize, attrs: &str, out: &mut RobotTelegram) -> Result<(), ParseError> {
         match &self.schema.rob[idx] {
             RobElement::Keyword(k) => {
                 let names = k.attrs();
-                let mut attrs = e.attributes();
-                attrs.with_checks(false); // trusted wire data; avoids the per-call duplicate-name check allocation
-                for a in attrs {
-                    let a = a.map_err(|err| ParseError::Xml(err.to_string()))?;
-                    let key: &str = a.key.as_ref();
+                for (key, value) in (Attrs { src: attrs.as_bytes(), pos: 0 }) {
                     let Some(i) = names.iter().position(|n| *n == key) else { continue };
-                    let v = parse_f64(a.value.as_ref(), key)?;
+                    let v = parse_f64(value, key)?;
                     match k {
                         Keyword::RIst => out.rist[i] = v,
                         Keyword::RSol => out.rsol[i] = v,
@@ -142,14 +317,10 @@ impl Parser {
                     }
                 }
             }
-            RobElement::Attrs { attrs, .. } => {
-                let mut it = e.attributes();
-                it.with_checks(false); // trusted wire data; avoids the per-call duplicate-name check allocation
-                for a in it {
-                    let a = a.map_err(|err| ParseError::Xml(err.to_string()))?;
-                    let key: &str = a.key.as_ref();
-                    if let Some(attr) = attrs.iter().find(|x| x.name == key) {
-                        out.slots[attr.slot] = parse_f64(a.value.as_ref(), key)?;
+            RobElement::Attrs { attrs: schema_attrs, .. } => {
+                for (key, value) in (Attrs { src: attrs.as_bytes(), pos: 0 }) {
+                    if let Some(attr) = schema_attrs.iter().find(|x| x.name == key) {
+                        out.slots[attr.slot] = parse_f64(value, key)?;
                     }
                 }
             }
@@ -160,59 +331,48 @@ impl Parser {
 
     /// Parse one telegram into `out`. Values of absent elements are left untouched.
     pub fn parse(&mut self, bytes: &[u8], out: &mut RobotTelegram) -> Result<(), ParseError> {
-        let mut reader = quick_xml::Reader::from_reader(bytes);
-        reader.config_mut().trim_text(true);
+        let mut tok = Tokenizer::new(bytes);
         self.seen.iter_mut().for_each(|s| *s = false);
         let mut depth = 0usize;
         let mut got_ipoc = false;
         let mut text_target: Option<TextTarget> = None;
         loop {
-            let ev = reader.read_event().map_err(|e| ParseError::Xml(e.to_string()))?;
-            match ev {
-                Event::Eof => break,
-                Event::Start(e) => {
+            match tok.next()? {
+                Token::Eof => break,
+                Token::Start { name, attrs, empty } => {
                     if depth == 0 {
-                        self.check_root(&e)?;
-                    } else if depth == 1 {
-                        let qname = e.name();
-                        let name: &str = qname.as_ref();
-                        if name == "IPOC" {
-                            text_target = Some(TextTarget::Ipoc);
-                        } else if let Some(idx) = self.element_index(name) {
-                            self.seen[idx] = true;
-                            match &self.schema.rob[idx] {
-                                RobElement::Text { slot, .. } => text_target = Some(TextTarget::Slot(*slot)),
-                                _ => self.read_attrs(idx, &e, out)?,
+                        self.check_root(name, attrs)?;
+                        if empty {
+                            break; // root self-closed: no children, no IPOC
+                        }
+                        depth = 1;
+                    } else {
+                        if depth == 1 {
+                            if name == "IPOC" {
+                                text_target = Some(TextTarget::Ipoc);
+                            } else if let Some(idx) = self.element_index(name) {
+                                self.seen[idx] = true;
+                                match &self.schema.rob[idx] {
+                                    RobElement::Text { slot, .. } => text_target = Some(TextTarget::Slot(*slot)),
+                                    _ => self.read_attrs(idx, attrs, out)?,
+                                }
+                            } else {
+                                self.unknown += 1;
                             }
-                        } else {
-                            self.unknown += 1;
                         }
-                    }
-                    depth += 1;
-                }
-                Event::Empty(e) => {
-                    if depth == 0 {
-                        self.check_root(&e)?;
-                        break;
-                    }
-                    if depth == 1 {
-                        let qname = e.name();
-                        let name: &str = qname.as_ref();
-                        if let Some(idx) = self.element_index(name) {
-                            self.seen[idx] = true;
-                            self.read_attrs(idx, &e, out)?;
-                        } else {
-                            self.unknown += 1;
+                        // Depth >= 2 is nested deeper than the telegram grammar: not
+                        // dispatched, just tracked so its End is consumed correctly.
+                        if !empty {
+                            depth += 1;
                         }
                     }
                 }
-                Event::End(_) => {
+                Token::End { name: _ } => {
                     depth = depth.saturating_sub(1);
                     text_target = None;
                 }
-                Event::Text(t) => {
+                Token::Text(s) => {
                     if depth == 2 {
-                        let s: &str = t.as_ref();
                         match text_target {
                             Some(TextTarget::Ipoc) => {
                                 out.ipoc = s.trim().parse::<u64>().map_err(|_| ParseError::Number(format!("IPOC={s:?}")))?;
@@ -223,7 +383,6 @@ impl Parser {
                         }
                     }
                 }
-                _ => {}
             }
         }
         if depth != 0 {
@@ -385,5 +544,53 @@ mod tests {
             p.parse(SHIPPED_TELEGRAM, &mut t).unwrap();
         }
         assert_eq!(crate::test_alloc::allocations(), before, "parse must not allocate on the hot path");
+    }
+
+    #[test]
+    fn tolerates_declaration_comment_single_quotes_and_nested_unknown() {
+        let s = schema(SHIPPED);
+        let mut p = Parser::new(&s);
+        let mut t = RobotTelegram::default();
+        let xml = b"<?xml version=\"1.0\"?>\n<!-- comment --><Rob TYPE='KukaRsi'><Delay D='7'/><Extra><Deep x=\"1\">z</Deep></Extra><IPOC>12</IPOC></Rob>";
+        p.parse(xml, &mut t).unwrap();
+        assert_eq!(t.delay, 7);
+        assert_eq!(t.ipoc, 12);
+        assert_eq!(p.unknown(), 1, "Extra counted once, its child is not a telegram element");
+    }
+
+    #[test]
+    fn rejects_malformed_tags() {
+        let s = schema(SHIPPED);
+        let mut p = Parser::new(&s);
+        let mut t = RobotTelegram::default();
+        for bad in [
+            &b"<Rob TYPE=\"KukaRsi\"><Delay D=7 /><IPOC>1</IPOC></Rob>"[..],
+            b"<Rob TYPE=\"KukaRsi\"><Delay D=\"7 /><IPOC>1</IPOC></Rob>",
+            b"<Rob TYPE=\"KukaRsi\"><IPOC>1</IPOC></Rob",
+            b"<Rob TYPE=\"KukaRsi\"><IPOC>1<IPOC></Rob>",
+        ] {
+            assert!(matches!(p.parse(bad, &mut t), Err(ParseError::Xml(_))), "{:?}", std::str::from_utf8(bad));
+        }
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn parses_any_axis_values_in_any_attribute_order(vals in proptest::array::uniform6(-400.0f64..400.0), perm in 0usize..720, ipoc in 0u64..u64::MAX) {
+            let s = schema(SHIPPED);
+            let mut p = Parser::new(&s);
+            let mut t = RobotTelegram::default();
+            // Lehmer-code permutation of the six attribute positions.
+            let mut order: Vec<usize> = (0..6).collect();
+            let mut k = perm;
+            let mut permuted = Vec::with_capacity(6);
+            for i in (1..=6).rev() { let idx = k % i; k /= i; permuted.push(order.remove(idx)); }
+            let names = ["A1", "A2", "A3", "A4", "A5", "A6"];
+            let mut xml = String::from("<Rob TYPE=\"KukaRsi\"><AIPos");
+            for &i in &permuted { xml.push_str(&format!(" {}=\"{:.4}\"", names[i], vals[i])); }
+            xml.push_str(&format!(" /><IPOC>{ipoc}</IPOC></Rob>"));
+            p.parse(xml.as_bytes(), &mut t).unwrap();
+            for i in 0..6 { proptest::prop_assert!((t.aipos[i] - vals[i]).abs() < 1e-4); }
+            proptest::prop_assert_eq!(t.ipoc, ipoc);
+        }
     }
 }
