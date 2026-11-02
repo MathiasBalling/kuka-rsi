@@ -4,5 +4,6 @@
 
 pub mod config;
 pub mod error;
+pub mod telegram;
 
 pub use error::{Error, Result};
