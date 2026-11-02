@@ -1,6 +1,8 @@
 //! Configuration: the controller's `RSI_EthernetConfig` XML, driver limits and settings.
 
+use std::net::SocketAddr;
 use std::path::Path;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -216,6 +218,178 @@ impl EthernetConfig {
     }
 }
 
+const AXIS_NAMES: [&str; 6] = ["A1", "A2", "A3", "A4", "A5", "A6"];
+
+/// Driver-side limits in SI units. Enforced by the limiter every cycle.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Limits {
+    /// Lower joint bound, rad.
+    pub position_min: [f64; 6],
+    /// Upper joint bound, rad.
+    pub position_max: [f64; 6],
+    /// Per-joint speed bound, rad/s.
+    pub max_velocity: [f64; 6],
+    /// Per-joint acceleration bound, rad/s²; `None` disables the acceleration clamp.
+    pub max_acceleration: Option<[f64; 6]>,
+    /// Bound on `|q - q_start|`, rad; mirrors the `AxisCorr` limits in the RSI context.
+    pub max_correction: [f64; 6],
+    /// Warning threshold for `|q_actual - q_command|`, rad.
+    pub max_tracking_error: f64,
+}
+
+fn all_deg(v: f64) -> [f64; 6] {
+    [v.to_radians(); 6]
+}
+
+impl Limits {
+    /// KR 10 R1100-2 axis ranges from the data sheet (A1 ±170°, A2 −190°/+45°, A3 −120°/+156°,
+    /// A4 ±185°, A5 ±120°, A6 ±350°) with bring-up speeds: 30°/s, 300°/s². Verify the ranges
+    /// against `$SOFTN_END` / `$SOFTP_END` on the pendant before the first motion.
+    pub fn kr10_defaults() -> Limits {
+        let position_min = [-170f64, -190.0, -120.0, -185.0, -120.0, -350.0].map(f64::to_radians);
+        let position_max = [170f64, 45.0, 156.0, 185.0, 120.0, 350.0].map(f64::to_radians);
+        let mut max_correction = [0.0; 6];
+        for i in 0..6 {
+            max_correction[i] = position_max[i] - position_min[i];
+        }
+        Limits {
+            position_min,
+            position_max,
+            max_velocity: all_deg(30.0),
+            max_acceleration: Some(all_deg(300.0)),
+            max_correction,
+            max_tracking_error: 2f64.to_radians(),
+        }
+    }
+
+    pub fn with_max_velocity_all(mut self, v: f64) -> Limits {
+        self.max_velocity = [v; 6];
+        self
+    }
+
+    pub fn with_max_acceleration_all(mut self, a: Option<f64>) -> Limits {
+        self.max_acceleration = a.map(|a| [a; 6]);
+        self
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        for i in 0..6 {
+            let n = AXIS_NAMES[i];
+            if !(self.position_min[i].is_finite() && self.position_max[i].is_finite()) || self.position_min[i] >= self.position_max[i] {
+                return Err(cfg_err(format!("limits: position_min must be below position_max for {n}")));
+            }
+            if !(self.max_velocity[i] > 0.0) || !self.max_velocity[i].is_finite() {
+                return Err(cfg_err(format!("limits: max_velocity must be positive and finite for {n}")));
+            }
+            if let Some(a) = self.max_acceleration {
+                if !(a[i] > 0.0) || !a[i].is_finite() {
+                    return Err(cfg_err(format!("limits: max_acceleration must be positive and finite for {n}")));
+                }
+            }
+            if !(self.max_correction[i] > 0.0) || !self.max_correction[i].is_finite() {
+                return Err(cfg_err(format!("limits: max_correction must be positive and finite for {n}")));
+            }
+        }
+        if !(self.max_tracking_error > 0.0) || !self.max_tracking_error.is_finite() {
+            return Err(cfg_err("limits: max_tracking_error must be positive and finite"));
+        }
+        Ok(())
+    }
+
+    /// Reject a target outside the position bounds or with a non-finite component.
+    pub fn check_position(&self, q: &[f64; 6]) -> Result<()> {
+        for i in 0..6 {
+            if !q[i].is_finite() {
+                return Err(Error::Limit(format!("{} target is not finite", AXIS_NAMES[i])));
+            }
+            if q[i] < self.position_min[i] || q[i] > self.position_max[i] {
+                return Err(Error::Limit(format!(
+                    "{} target {:.4} rad outside [{:.4}, {:.4}]",
+                    AXIS_NAMES[i], q[i], self.position_min[i], self.position_max[i]
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Everything the driver needs to start.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DriverConfig {
+    pub ethernet: EthernetConfig,
+    /// Override of the bind address; default is `IP_NUMBER:PORT` from the Ethernet config.
+    pub bind: Option<SocketAddr>,
+    pub cycle: Duration,
+    /// Silence after which an active session is declared lost.
+    pub link_timeout: Duration,
+    /// Try to raise the real-time thread's scheduling priority.
+    pub rt_priority: bool,
+    /// Receive element (text, BOOL) wired to the `Stop` object, e.g. `MoveStop`.
+    pub stop_channel: Option<String>,
+    pub limits: Limits,
+}
+
+impl DriverConfig {
+    pub fn new(ethernet: EthernetConfig) -> DriverConfig {
+        DriverConfig {
+            ethernet,
+            bind: None,
+            cycle: Duration::from_millis(4),
+            link_timeout: Duration::from_millis(500),
+            rt_priority: true,
+            stop_channel: None,
+            limits: Limits::kr10_defaults(),
+        }
+    }
+
+    pub fn from_ethernet_xml(path: impl AsRef<Path>) -> Result<DriverConfig> {
+        Ok(DriverConfig::new(EthernetConfig::from_path(path)?))
+    }
+
+    pub fn bind(mut self, addr: SocketAddr) -> Self {
+        self.bind = Some(addr);
+        self
+    }
+
+    pub fn limits(mut self, limits: Limits) -> Self {
+        self.limits = limits;
+        self
+    }
+
+    pub fn stop_channel(mut self, tag: &str) -> Self {
+        self.stop_channel = Some(tag.to_string());
+        self
+    }
+
+    pub fn link_timeout(mut self, d: Duration) -> Self {
+        self.link_timeout = d;
+        self
+    }
+
+    pub fn rt_priority(mut self, on: bool) -> Self {
+        self.rt_priority = on;
+        self
+    }
+
+    pub fn cycle(mut self, d: Duration) -> Self {
+        self.cycle = d;
+        self
+    }
+
+    /// The address to bind: the override, or `IP_NUMBER:PORT` from the Ethernet config.
+    pub fn bind_addr(&self) -> Result<SocketAddr> {
+        if let Some(a) = self.bind {
+            return Ok(a);
+        }
+        let ip: std::net::IpAddr = self
+            .ethernet
+            .ip_number
+            .parse()
+            .map_err(|_| cfg_err(format!("IP_NUMBER {:?} is not an IP address", self.ethernet.ip_number)))?;
+        Ok(SocketAddr::new(ip, self.ethernet.port))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -309,5 +483,77 @@ mod tests {
         std::fs::write(&p, SHIPPED).unwrap();
         assert_eq!(EthernetConfig::from_path(&p).unwrap().port, 49152);
         assert!(EthernetConfig::from_path(dir.join("missing.xml")).is_err());
+    }
+
+    #[test]
+    fn kr10_defaults_are_valid_and_conservative() {
+        let l = Limits::kr10_defaults();
+        l.validate().unwrap();
+        assert!((l.position_max[0] - 170f64.to_radians()).abs() < 1e-12);
+        assert!((l.position_min[1] + 190f64.to_radians()).abs() < 1e-12);
+        assert!(l.max_velocity.iter().all(|v| (*v - 30f64.to_radians()).abs() < 1e-12));
+        assert_eq!(l.max_acceleration.map(|a| a[0]), Some(300f64.to_radians()));
+        for i in 0..6 {
+            assert!((l.max_correction[i] - (l.position_max[i] - l.position_min[i])).abs() < 1e-12);
+        }
+        let faster = l.with_max_velocity_all(1.0);
+        assert_eq!(faster.max_velocity, [1.0; 6]);
+        assert_eq!(l.with_max_acceleration_all(None).max_acceleration, None);
+    }
+
+    #[test]
+    fn limits_validation_rejects_nonsense() {
+        let mut l = Limits::kr10_defaults();
+        l.position_min[2] = l.position_max[2] + 0.1;
+        assert!(l.validate().unwrap_err().to_string().contains("position"));
+        let mut l = Limits::kr10_defaults();
+        l.max_velocity[0] = 0.0;
+        assert!(l.validate().unwrap_err().to_string().contains("velocity"));
+        let mut l = Limits::kr10_defaults();
+        l.max_correction[5] = f64::NAN;
+        assert!(l.validate().is_err());
+        let mut l = Limits::kr10_defaults();
+        l.max_tracking_error = -1.0;
+        assert!(l.validate().is_err());
+        let mut l = Limits::kr10_defaults();
+        l.max_acceleration = Some([0.0; 6]);
+        assert!(l.validate().unwrap_err().to_string().contains("acceleration"));
+    }
+
+    #[test]
+    fn check_position_bounds_and_finiteness() {
+        let l = Limits::kr10_defaults();
+        l.check_position(&[0.0; 6]).unwrap();
+        let mut q = [0.0; 6];
+        q[0] = 4.0;
+        assert!(l.check_position(&q).unwrap_err().to_string().contains("A1"));
+        q[0] = f64::INFINITY;
+        assert!(l.check_position(&q).is_err());
+    }
+
+    #[test]
+    fn driver_config_defaults_and_bind_addr() {
+        let dir = std::env::temp_dir().join(format!("kuka-rsi-drv-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("c.xml");
+        std::fs::write(&p, SHIPPED).unwrap();
+        let c = DriverConfig::from_ethernet_xml(&p).unwrap();
+        assert_eq!(c.cycle, Duration::from_millis(4));
+        assert_eq!(c.link_timeout, Duration::from_millis(500));
+        assert!(c.rt_priority);
+        assert_eq!(c.stop_channel, None);
+        assert_eq!(c.bind_addr().unwrap().to_string(), "192.168.10.10:49152");
+        let c = c.bind("127.0.0.1:0".parse().unwrap()).stop_channel("MoveStop").link_timeout(Duration::from_millis(250)).rt_priority(false);
+        assert_eq!(c.bind_addr().unwrap().to_string(), "127.0.0.1:0");
+        assert_eq!(c.stop_channel.as_deref(), Some("MoveStop"));
+        assert!(!c.rt_priority);
+    }
+
+    #[test]
+    fn bind_addr_rejects_bad_ip_in_config() {
+        let mut e = EthernetConfig::from_str(SHIPPED).unwrap();
+        e.ip_number = "not-an-ip".into();
+        let err = DriverConfig::new(e).bind_addr().unwrap_err().to_string();
+        assert!(err.contains("IP_NUMBER"), "{err}");
     }
 }
