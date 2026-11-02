@@ -1,0 +1,61 @@
+&ACCESS RVP
+&REL 1
+&PARAM TEMPLATE = C:\KRC\Roboter\Template\vorgabe
+&PARAM EDITMASK = *
+DEF kuka_rsi( )
+; =========================================================================
+; kuka_rsi: joint-space RSI corrections from the PC (kuka-rsi driver)
+;
+; Context:  kuka_rsi.rsix            (Config\User\Common\SensorInterface)
+; Config:   kuka_rsi_ethernet.xml    (same folder)
+;
+; Start order: start the driver on the PC first (it listens for the first
+; telegram), then select and start this program. The ETHERNET object sends
+; its first telegram at RSI_ON and stops the robot with RSIBad after 100
+; unanswered cycles (0.4 s).
+;
+; The program ends when the driver pulses the MoveStop channel (Stop object,
+; ExitMoveCorr), when the program is cancelled on the pendant, or when RSI
+; reports a communication error.
+; =========================================================================
+DECL INT ret
+DECL INT contid
+
+;FOLD INI
+  ;FOLD BASISTECH INI
+    GLOBAL INTERRUPT DECL 3 WHEN $STOPMESS==TRUE DO IR_STOPM ( )
+    INTERRUPT ON 3
+    BAS (#INITMOV,0 )
+  ;ENDFOLD (BASISTECH INI)
+  ;FOLD USER INI
+    ;Make your modifications here
+  ;ENDFOLD (USER INI)
+;ENDFOLD (INI)
+
+; Start pose with the wrist bent (A5 well away from 0). Replace with a taught
+; pose for the cell; the driver captures whatever setpoint it sees first.
+PTP {A1 0, A2 -90, A3 90, A4 0, A5 90, A6 0}
+
+ret = RSI_CREATE("kuka_rsi", contid, TRUE)
+IF (ret <> RSIOK) THEN
+  HALT
+ENDIF
+
+; Absolute corrections in the default sensor mode #IPO_FAST (4 ms).
+ret = RSI_ON(#ABSOLUTE)
+IF (ret <> RSIOK) THEN
+  HALT
+ENDIF
+
+; Sensor-guided motion: holds the start pose and applies AK from the driver.
+RSI_MOVECORR()
+
+ret = RSI_OFF()
+IF (ret <> RSIOK) THEN
+  HALT
+ENDIF
+ret = RSI_DELETE(contid)
+
+PTP {A1 0, A2 -90, A3 90, A4 0, A5 90, A6 0}
+
+END

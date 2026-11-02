@@ -1,0 +1,46 @@
+&ACCESS RVP
+&REL 1
+&PARAM TEMPLATE = C:\KRC\Roboter\Template\vorgabe
+&PARAM EDITMASK = *
+DEF kuka_rsi_monitor( )
+; =========================================================================
+; kuka_rsi_monitor: read-only RSI stream (ONLYSEND), no motion.
+;
+; Context:  kuka_rsi_monitor.rsix, config kuka_rsi_monitor.xml.
+; The robot streams telegrams for 60 s and expects no reply. Use it as the
+; first step on hardware: run `rsi-monitor --config kuka_rsi_monitor.xml`
+; on the PC and check that state and IPOC arrive at 250 Hz.
+; =========================================================================
+DECL INT ret
+DECL INT contid
+
+;FOLD INI
+  ;FOLD BASISTECH INI
+    GLOBAL INTERRUPT DECL 3 WHEN $STOPMESS==TRUE DO IR_STOPM ( )
+    INTERRUPT ON 3
+    BAS (#INITMOV,0 )
+  ;ENDFOLD (BASISTECH INI)
+  ;FOLD USER INI
+    ;Make your modifications here
+  ;ENDFOLD (USER INI)
+;ENDFOLD (INI)
+
+ret = RSI_CREATE("kuka_rsi_monitor", contid, TRUE)
+IF (ret <> RSIOK) THEN
+  HALT
+ENDIF
+
+ret = RSI_ON(#ABSOLUTE)
+IF (ret <> RSIOK) THEN
+  HALT
+ENDIF
+
+WAIT SEC 60
+
+ret = RSI_OFF()
+IF (ret <> RSIOK) THEN
+  HALT
+ENDIF
+ret = RSI_DELETE(contid)
+
+END

@@ -1,0 +1,64 @@
+# Controller side of the kuka-rsi driver (KR C5 micro, KSS 8.7, RSI 5.0)
+
+## Files and where they go
+
+| File | Robot path | Purpose |
+| --- | --- | --- |
+| `kuka_rsi_ethernet.xml` | `C:\KRC\ROBOTER\Config\User\Common\SensorInterface\` | Telegram layout and the PC address. The driver reads the same file |
+| `kuka_rsi_monitor.xml` | same | Same layout with `ONLYSEND` TRUE, for the read-only first step |
+| `kuka_rsi.rsix` | same | RSI context: Ethernet, AxisCorr, AxisCorrMon, Stop, GearTorque, Status, OV_PRO |
+| `kuka_rsi_monitor.rsix` | same | Same context pointing at the monitor config |
+| `kuka_rsi.src` | `KRC:\R1\Program\` | PTP to the start pose, `RSI_ON(#ABSOLUTE)`, `RSI_MOVECORR()` |
+| `kuka_rsi_monitor.src` | `KRC:\R1\Program\` | `RSI_ON`, `WAIT SEC 60`, no motion |
+
+Copy them with WorkVisual (drag into `SensorInterface` and `Program` in the project
+structure, deploy) or with a USB stick. `RSI_CREATE` takes the context name without the
+`.rsix` extension.
+
+Open both `.rsix` files once in RSIVisual (WorkVisual 6.0 + RSI 5.0 option) and save
+them, so the tool regenerates the layout and validates every parameter. They were
+derived by hand from FZI's `kuka_rsi_driver` KR C5 context (BSD-3-Clause,
+https://github.com/fzi-forschungszentrum-informatik/kuka_rsi_driver).
+
+## Network
+
+RSI needs its own sensor network, separate from the EKI addresses (`172.31.1.x`):
+
+1. On the pendant: Start-up > Network configuration > KLI tab > Advanced... > Add
+   interface. Name it `RSI`, address type **Mixed IP address**, controller IP on a free
+   subnet, e.g. `192.168.10.147/24`. `192.168.0.x` and the existing KLI subnet are
+   blocked by the controller.
+2. Save, then reboot with Cold start and Reload files.
+3. Give the PC's NIC an address on the same subnet (`192.168.10.10/24`, or an alias on
+   the NIC already used for EKI) and put that address in `IP_NUMBER` of both XML files.
+4. Check with the monitor step below before any motion.
+
+## Start order
+
+1. PC: start the driver (`rsi-monitor`, an example, or your Python script). It binds
+   `IP_NUMBER:PORT` and waits.
+2. Pendant: select and start the program. After the PTP, `RSI_ON` sends the first
+   telegram; the driver answers within 4 ms from then on.
+3. To end: `Driver.close()` pulses `MoveStop`, the program leaves `RSI_MOVECORR()`,
+   runs `RSI_OFF` and parks. Stopping the driver without that makes the robot stop with
+   an RSI communication error after 0.4 s, which is safe but leaves a message to
+   acknowledge.
+
+## Bring-up checklist
+
+1. `kuka_rsi_monitor.src` with `rsi-monitor --config controller/kuka_rsi_monitor.xml`:
+   telegrams at 250 Hz, `Delay` 0, joint angles match the pendant. Save a few raw
+   telegrams into `crates/kuka-rsi/tests/fixtures/` for the parser tests.
+2. `kuka_rsi.src` in T1 with `rsi-monitor --config controller/kuka_rsi_ethernet.xml`:
+   the robot holds, `AK` stays 0, `Delay` stays 0 for a minute, `close()` ends the
+   program cleanly.
+3. `cargo run --example jog -- controller/kuka_rsi_ethernet.xml` in T1 at 10 % override:
+   A6 moves 2° and back; tracking error and clamp counters stay quiet; playback slows
+   with the override.
+4. `cargo run --example stream_trajectory -- ...`, then a recorded path
+   through the Python `Driver.stream`.
+5. Fault paths: `Driver.fault()`, cable unplugged, program restarted while the driver
+   keeps running (it must reconnect and re-capture the start pose).
+
+Read the machine data (`$SOFTN_END`, `$SOFTP_END`, axis speeds) from the pendant and
+put them into `Limits` and the `AxisCorr`/`AxisCorrMon` parameters before step 3.
