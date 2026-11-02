@@ -177,10 +177,26 @@ impl EthernetConfig {
         Self::validate_section("SEND", &self.send, SEND_KEYWORDS)?;
         Self::validate_section("RECEIVE", &self.receive, RECEIVE_KEYWORDS)?;
         if !self.onlysend {
+            // Absolute corrections: a session takes `q_start` from `ASPos` and holds the robot at
+            // `AIPos`. Without them both stay zero and the first `AK` commands a jump.
+            for keyword in ["DEF_AIPos", "DEF_ASPos"] {
+                if !self.send.iter().any(|e| e.indx == Index::Internal && e.tag.eq_ignore_ascii_case(keyword)) {
+                    return Err(cfg_err(format!(
+                        "SEND must contain {keyword} unless ONLYSEND is TRUE: absolute corrections need the axis setpoint and actual position"
+                    )));
+                }
+            }
             for i in 1..=6 {
                 let tag = format!("AK.A{i}");
-                if !self.receive.iter().any(|e| e.tag == tag) {
+                let Some(e) = self.receive.iter().find(|e| e.tag == tag) else {
                     return Err(cfg_err(format!("RECEIVE must contain {tag} unless ONLYSEND is TRUE")));
+                };
+                // With HOLDON="0" the robot resets a missing correction to zero, which in absolute
+                // mode means "back to the start pose".
+                if e.holdon != Some(true) {
+                    return Err(cfg_err(format!(
+                        "RECEIVE element {tag}: AK must have HOLDON=\"1\": a late reply must hold the last correction, not reset it to zero"
+                    )));
                 }
             }
         }
@@ -425,14 +441,59 @@ mod tests {
     fn with_receive(receive: &str) -> String {
         format!(
             "<ROOT><CONFIG><IP_NUMBER>127.0.0.1</IP_NUMBER><PORT>49152</PORT><SENTYPE>T</SENTYPE><ONLYSEND>FALSE</ONLYSEND></CONFIG>\
-             <SEND><ELEMENTS><ELEMENT TAG=\"DEF_AIPos\" TYPE=\"DOUBLE\" INDX=\"INTERNAL\" /></ELEMENTS></SEND>\
+             <SEND><ELEMENTS>{POSITIONS}</ELEMENTS></SEND>\
              <RECEIVE><ELEMENTS>{receive}</ELEMENTS></RECEIVE></ROOT>"
+        )
+    }
+
+    const POSITIONS: &str = "<ELEMENT TAG=\"DEF_AIPos\" TYPE=\"DOUBLE\" INDX=\"INTERNAL\" /><ELEMENT TAG=\"DEF_ASPos\" TYPE=\"DOUBLE\" INDX=\"INTERNAL\" />";
+
+    fn config(onlysend: bool, send: &str, receive: &str) -> String {
+        let onlysend = if onlysend { "TRUE" } else { "FALSE" };
+        format!(
+            "<ROOT><CONFIG><IP_NUMBER>127.0.0.1</IP_NUMBER><PORT>49152</PORT><SENTYPE>T</SENTYPE><ONLYSEND>{onlysend}</ONLYSEND></CONFIG>\
+             <SEND><ELEMENTS>{send}</ELEMENTS></SEND><RECEIVE><ELEMENTS>{receive}</ELEMENTS></RECEIVE></ROOT>"
         )
     }
 
     const AK: &str = "<ELEMENT TAG=\"AK.A1\" TYPE=\"DOUBLE\" INDX=\"1\" HOLDON=\"1\" /><ELEMENT TAG=\"AK.A2\" TYPE=\"DOUBLE\" INDX=\"2\" HOLDON=\"1\" />\
         <ELEMENT TAG=\"AK.A3\" TYPE=\"DOUBLE\" INDX=\"3\" HOLDON=\"1\" /><ELEMENT TAG=\"AK.A4\" TYPE=\"DOUBLE\" INDX=\"4\" HOLDON=\"1\" />\
         <ELEMENT TAG=\"AK.A5\" TYPE=\"DOUBLE\" INDX=\"5\" HOLDON=\"1\" /><ELEMENT TAG=\"AK.A6\" TYPE=\"DOUBLE\" INDX=\"6\" HOLDON=\"1\" />";
+
+    #[test]
+    fn absolute_mode_requires_axis_positions() {
+        EthernetConfig::from_str(&config(false, POSITIONS, AK)).unwrap();
+        // Keywords match case-insensitively, like the keyword lists.
+        let lower = "<ELEMENT TAG=\"def_aipos\" TYPE=\"DOUBLE\" INDX=\"INTERNAL\" /><ELEMENT TAG=\"DEF_ASPOS\" TYPE=\"DOUBLE\" INDX=\"INTERNAL\" />";
+        EthernetConfig::from_str(&config(false, lower, AK)).unwrap();
+        for (send, missing) in [
+            ("<ELEMENT TAG=\"DEF_AIPos\" TYPE=\"DOUBLE\" INDX=\"INTERNAL\" />", "DEF_ASPos"),
+            ("<ELEMENT TAG=\"DEF_ASPos\" TYPE=\"DOUBLE\" INDX=\"INTERNAL\" />", "DEF_AIPos"),
+            ("<ELEMENT TAG=\"DEF_RIst\" TYPE=\"DOUBLE\" INDX=\"INTERNAL\" />", "DEF_AIPos"),
+        ] {
+            let err = EthernetConfig::from_str(&config(false, send, AK)).unwrap_err().to_string();
+            assert!(err.contains(missing), "{err}");
+            assert!(err.contains("absolute corrections need the axis setpoint and actual position"), "{err}");
+        }
+    }
+
+    #[test]
+    fn ak_must_hold_on_late_replies() {
+        for holdon in [" HOLDON=\"0\"", ""] {
+            let ak = AK.replace("INDX=\"3\" HOLDON=\"1\"", &format!("INDX=\"3\"{holdon}"));
+            let err = EthernetConfig::from_str(&config(false, POSITIONS, &ak)).unwrap_err().to_string();
+            assert!(err.contains("AK.A3"), "{err}");
+            assert!(err.contains("AK must have HOLDON=\"1\""), "{err}");
+        }
+    }
+
+    #[test]
+    fn onlysend_configs_are_exempt_from_the_absolute_mode_rules() {
+        let ak_reset = AK.replace("HOLDON=\"1\"", "HOLDON=\"0\"");
+        let c = EthernetConfig::from_str(&config(true, "<ELEMENT TAG=\"DEF_RIst\" TYPE=\"DOUBLE\" INDX=\"INTERNAL\" />", &ak_reset)).unwrap();
+        assert!(c.onlysend);
+        EthernetConfig::from_str(&config(true, "", "")).unwrap();
+    }
 
     #[test]
     fn rejects_non_consecutive_indices() {

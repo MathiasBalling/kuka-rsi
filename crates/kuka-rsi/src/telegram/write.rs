@@ -151,11 +151,11 @@ mod tests {
     fn writes_rkorr_and_user_groups() {
         let s = schema(
             "<ROOT><CONFIG><IP_NUMBER>127.0.0.1</IP_NUMBER><PORT>49152</PORT><SENTYPE>ImFree</SENTYPE><ONLYSEND>FALSE</ONLYSEND></CONFIG>\
-             <SEND><ELEMENTS><ELEMENT TAG=\"DEF_RIst\" TYPE=\"DOUBLE\" INDX=\"INTERNAL\" /></ELEMENTS></SEND><RECEIVE><ELEMENTS>\
+             <SEND><ELEMENTS><ELEMENT TAG=\"DEF_RIst\" TYPE=\"DOUBLE\" INDX=\"INTERNAL\" /><ELEMENT TAG=\"DEF_AIPos\" TYPE=\"DOUBLE\" INDX=\"INTERNAL\" /><ELEMENT TAG=\"DEF_ASPos\" TYPE=\"DOUBLE\" INDX=\"INTERNAL\" /></ELEMENTS></SEND><RECEIVE><ELEMENTS>\
              <ELEMENT TAG=\"RKorr.X\" TYPE=\"DOUBLE\" INDX=\"1\" /><ELEMENT TAG=\"RKorr.Y\" TYPE=\"DOUBLE\" INDX=\"2\" /><ELEMENT TAG=\"RKorr.Z\" TYPE=\"DOUBLE\" INDX=\"3\" />\
              <ELEMENT TAG=\"RKorr.A\" TYPE=\"DOUBLE\" INDX=\"4\" /><ELEMENT TAG=\"RKorr.B\" TYPE=\"DOUBLE\" INDX=\"5\" /><ELEMENT TAG=\"RKorr.C\" TYPE=\"DOUBLE\" INDX=\"6\" />\
-             <ELEMENT TAG=\"AK.A1\" TYPE=\"DOUBLE\" INDX=\"7\" /><ELEMENT TAG=\"AK.A2\" TYPE=\"DOUBLE\" INDX=\"8\" /><ELEMENT TAG=\"AK.A3\" TYPE=\"DOUBLE\" INDX=\"9\" />\
-             <ELEMENT TAG=\"AK.A4\" TYPE=\"DOUBLE\" INDX=\"10\" /><ELEMENT TAG=\"AK.A5\" TYPE=\"DOUBLE\" INDX=\"11\" /><ELEMENT TAG=\"AK.A6\" TYPE=\"DOUBLE\" INDX=\"12\" />\
+             <ELEMENT TAG=\"AK.A1\" TYPE=\"DOUBLE\" INDX=\"7\" HOLDON=\"1\" /><ELEMENT TAG=\"AK.A2\" TYPE=\"DOUBLE\" INDX=\"8\" HOLDON=\"1\" /><ELEMENT TAG=\"AK.A3\" TYPE=\"DOUBLE\" INDX=\"9\" HOLDON=\"1\" />\
+             <ELEMENT TAG=\"AK.A4\" TYPE=\"DOUBLE\" INDX=\"10\" HOLDON=\"1\" /><ELEMENT TAG=\"AK.A5\" TYPE=\"DOUBLE\" INDX=\"11\" HOLDON=\"1\" /><ELEMENT TAG=\"AK.A6\" TYPE=\"DOUBLE\" INDX=\"12\" HOLDON=\"1\" />\
              <ELEMENT TAG=\"Digout.o1\" TYPE=\"BOOL\" INDX=\"13\" /><ELEMENT TAG=\"Digout.o2\" TYPE=\"BOOL\" INDX=\"14\" /><ELEMENT TAG=\"DiO\" TYPE=\"LONG\" INDX=\"15\" />\
              </ELEMENTS></RECEIVE></ROOT>",
         );

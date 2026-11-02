@@ -11,7 +11,7 @@ use kuka_rsi::config::Limits;
 use kuka_rsi::control::{Command, Session};
 use kuka_rsi::link::UdpLink;
 use kuka_rsi::state::{deg2rad6, RobotState};
-use kuka_rsi::telegram::{Parser, RobotTelegram, Schema, SensorTelegram, Writer};
+use kuka_rsi::telegram::{Keyword, Parser, RobotTelegram, Schema, SensorTelegram, Writer};
 use std::net::UdpSocket;
 use std::time::Duration;
 
@@ -57,7 +57,9 @@ fn hot_paths_do_not_allocate() {
     for _ in 0..100 {
         parser.parse(TELEGRAM, &mut tele).unwrap();
     }
-    assert_eq!(allocations(), before, "Parser::parse must not allocate on the hot path");
+    let started = parser.seen(Keyword::AIPos) && parser.seen(Keyword::ASPos);
+    assert_eq!(allocations(), before, "Parser::parse and Parser::seen must not allocate on the hot path");
+    assert!(started);
     assert_eq!(tele.ipoc, 4004);
 
     // Writer: into a pre-sized buffer, a hundred telegrams must not touch the allocator.

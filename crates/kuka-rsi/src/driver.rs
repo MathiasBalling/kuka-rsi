@@ -15,7 +15,7 @@ use crate::control::{Command, Session, MAX_CHUNK, MAX_QUEUE};
 use crate::link::UdpLink;
 use crate::state::{RobotState, SessionState, StateMap};
 use crate::stats::{Event, Stats};
-use crate::telegram::{ParseError, Parser, RobotTelegram, Schema, SensorTelegram, Writer};
+use crate::telegram::{Keyword, ParseError, Parser, RobotTelegram, Schema, SensorTelegram, Writer};
 use crate::{Error, Result};
 
 pub const COMMAND_QUEUE: usize = 256;
@@ -268,6 +268,17 @@ impl Rt {
         }
 
         if self.session.state() != SessionState::Active {
+            // Absolute corrections: the session takes `q_start` from `ASPos` and holds the robot at
+            // `AIPos`. A first telegram without both would start it from stale or zero values and
+            // command a jump, so it is treated like a bad telegram: counted, not answered. (The
+            // config validation already requires both unless ONLYSEND, which never answers.)
+            if !self.onlysend && !(self.parser.seen(Keyword::AIPos) && self.parser.seen(Keyword::ASPos)) {
+                self.link.reset_peer();
+                self.stats.parse_errors += 1;
+                self.event(Event::ParseError);
+                self.publish();
+                return Ok(());
+            }
             // Whatever is still queued was sent for an earlier session (the API rejects motion
             // while no session is active): settings apply, motion is rejected.
             self.drain_commands_inactive();

@@ -257,6 +257,8 @@ mod tests {
         EthernetConfig::from_str(&xml).unwrap()
     }
 
+    const POSITIONS: &str = "<ELEMENT TAG=\"DEF_AIPos\" TYPE=\"DOUBLE\" INDX=\"INTERNAL\" /><ELEMENT TAG=\"DEF_ASPos\" TYPE=\"DOUBLE\" INDX=\"INTERNAL\" />";
+
     const AK: &str = "<ELEMENT TAG=\"AK.A1\" TYPE=\"DOUBLE\" INDX=\"1\" HOLDON=\"1\" /><ELEMENT TAG=\"AK.A2\" TYPE=\"DOUBLE\" INDX=\"2\" HOLDON=\"1\" />\
         <ELEMENT TAG=\"AK.A3\" TYPE=\"DOUBLE\" INDX=\"3\" HOLDON=\"1\" /><ELEMENT TAG=\"AK.A4\" TYPE=\"DOUBLE\" INDX=\"4\" HOLDON=\"1\" />\
         <ELEMENT TAG=\"AK.A5\" TYPE=\"DOUBLE\" INDX=\"5\" HOLDON=\"1\" /><ELEMENT TAG=\"AK.A6\" TYPE=\"DOUBLE\" INDX=\"6\" HOLDON=\"1\" />";
@@ -309,7 +311,7 @@ mod tests {
              <ELEMENT TAG=\"Digout.o1\" TYPE=\"BOOL\" INDX=\"13\" /><ELEMENT TAG=\"Digout.o2\" TYPE=\"BOOL\" INDX=\"14\" />\
              <ELEMENT TAG=\"DiO\" TYPE=\"LONG\" INDX=\"15\" />"
         );
-        let s = Schema::compile(&cfg(&receive, "<ELEMENT TAG=\"DEF_AIPos\" TYPE=\"DOUBLE\" INDX=\"INTERNAL\" />")).unwrap();
+        let s = Schema::compile(&cfg(&receive, POSITIONS)).unwrap();
         assert!(matches!(s.sen[0], SenElement::Ak));
         assert!(matches!(s.sen[1], SenElement::RKorr));
         assert!(matches!(&s.sen[2], SenElement::Attrs { tag, attrs } if tag == "Digout" && attrs.len() == 2 && attrs[1].slot == 13));
@@ -322,7 +324,7 @@ mod tests {
         let ek = "<ELEMENT TAG=\"EK.E1\" TYPE=\"DOUBLE\" INDX=\"7\" /><ELEMENT TAG=\"EK.E2\" TYPE=\"DOUBLE\" INDX=\"8\" />\
                   <ELEMENT TAG=\"EK.E3\" TYPE=\"DOUBLE\" INDX=\"9\" /><ELEMENT TAG=\"EK.E4\" TYPE=\"DOUBLE\" INDX=\"10\" />\
                   <ELEMENT TAG=\"EK.E5\" TYPE=\"DOUBLE\" INDX=\"11\" /><ELEMENT TAG=\"EK.E6\" TYPE=\"DOUBLE\" INDX=\"12\" />";
-        let s = Schema::compile(&cfg(&format!("{AK}{ek}"), "<ELEMENT TAG=\"DEF_AIPos\" TYPE=\"DOUBLE\" INDX=\"INTERNAL\" />")).unwrap();
+        let s = Schema::compile(&cfg(&format!("{AK}{ek}"), POSITIONS)).unwrap();
         assert!(matches!(s.sen[0], SenElement::Ak));
         assert!(matches!(s.sen[1], SenElement::Ek));
         assert_eq!(s.sen.len(), 2);
@@ -330,7 +332,7 @@ mod tests {
         let ek_swapped = "<ELEMENT TAG=\"EK.E2\" TYPE=\"DOUBLE\" INDX=\"7\" /><ELEMENT TAG=\"EK.E1\" TYPE=\"DOUBLE\" INDX=\"8\" />\
                   <ELEMENT TAG=\"EK.E3\" TYPE=\"DOUBLE\" INDX=\"9\" /><ELEMENT TAG=\"EK.E4\" TYPE=\"DOUBLE\" INDX=\"10\" />\
                   <ELEMENT TAG=\"EK.E5\" TYPE=\"DOUBLE\" INDX=\"11\" /><ELEMENT TAG=\"EK.E6\" TYPE=\"DOUBLE\" INDX=\"12\" />";
-        let err = Schema::compile(&cfg(&format!("{AK}{ek_swapped}"), "<ELEMENT TAG=\"DEF_AIPos\" TYPE=\"DOUBLE\" INDX=\"INTERNAL\" />")).unwrap_err().to_string();
+        let err = Schema::compile(&cfg(&format!("{AK}{ek_swapped}"), POSITIONS)).unwrap_err().to_string();
         assert!(err.contains("EK"), "{err}");
     }
 

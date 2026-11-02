@@ -407,3 +407,28 @@ fn back_to_back_streams_that_cannot_both_fit_are_rejected() {
     let ev = drv.events();
     assert!(!ev.contains(&Event::CommandRejected), "{ev:?}");
 }
+
+#[test]
+fn first_telegram_without_axis_positions_does_not_start_a_session() {
+    let drv = driver(500);
+    let robot = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    robot.set_read_timeout(Some(Duration::from_millis(150))).unwrap();
+    let mut buf = [0u8; 2048];
+    // No ASPos: `q_start` would be stale, so the telegram is counted and not answered.
+    let no_aspos = br#"<Rob TYPE="KukaRsi"><AIPos A1="1.0" A2="-90.0" A3="90.0" A4="0.0" A5="90.0" A6="0.0" /><Delay D="0" /><IPOC>4000</IPOC></Rob>"#;
+    robot.send_to(no_aspos, drv.local_addr()).unwrap();
+    assert!(robot.recv_from(&mut buf).is_err(), "a telegram without ASPos was answered");
+    assert_eq!(drv.session(), SessionState::Listening);
+    assert_eq!(drv.stats().parse_errors, 1);
+    assert_eq!(drv.stats().sessions, 0);
+
+    let full = br#"<Rob TYPE="KukaRsi"><AIPos A1="1.0" A2="-90.0" A3="90.0" A4="0.0" A5="90.0" A6="0.0" /><ASPos A1="1.0" A2="-90.0" A3="90.0" A4="0.0" A5="90.0" A6="0.0" /><Delay D="0" /><IPOC>4004</IPOC></Rob>"#;
+    robot.send_to(full, drv.local_addr()).unwrap();
+    let (n, _) = robot.recv_from(&mut buf).expect("a telegram with both positions starts the session");
+    let reply = std::str::from_utf8(&buf[..n]).unwrap();
+    assert!(reply.contains("<IPOC>4004</IPOC>"), "{reply}");
+    // The reply leaves before the cycle's state is published.
+    drv.wait_for_robot(Duration::from_secs(1)).unwrap();
+    assert_eq!(drv.stats().sessions, 1);
+    drv.close().unwrap();
+}

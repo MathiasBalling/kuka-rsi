@@ -247,7 +247,10 @@ const MAX_DEPTH: usize = 8;
 /// Reusable parser bound to one schema.
 pub struct Parser {
     schema: Schema,
+    /// Schema elements present in the telegram being parsed.
     seen: Vec<bool>,
+    /// `seen` of the last telegram that parsed successfully.
+    seen_good: Vec<bool>,
     missing: u64,
     unknown: u64,
 }
@@ -267,7 +270,19 @@ fn parse_f64(s: &str, what: &str) -> Result<f64, ParseError> {
 
 impl Parser {
     pub fn new(schema: &Schema) -> Parser {
-        Parser { schema: schema.clone(), seen: vec![false; schema.rob.len()], missing: 0, unknown: 0 }
+        Parser { schema: schema.clone(), seen: vec![false; schema.rob.len()], seen_good: vec![false; schema.rob.len()], missing: 0, unknown: 0 }
+    }
+
+    /// Whether the element of `keyword` was present in the last successfully parsed telegram.
+    /// False before the first one and for keywords the schema does not contain. Values of absent
+    /// elements are kept from earlier telegrams, so this is how a caller tells a fresh value from
+    /// a stale one.
+    pub fn seen(&self, keyword: Keyword) -> bool {
+        self.schema
+            .rob
+            .iter()
+            .position(|e| matches!(e, RobElement::Keyword(k) if *k == keyword))
+            .is_some_and(|i| self.seen_good[i])
     }
 
     /// Schema elements absent from telegrams so far (cumulative).
@@ -432,6 +447,7 @@ impl Parser {
             return Err(ParseError::MissingIpoc);
         }
         self.missing += self.seen.iter().filter(|s| !**s).count() as u64;
+        self.seen_good.copy_from_slice(&self.seen);
         Ok(())
     }
 }
@@ -526,6 +542,27 @@ mod tests {
         assert_eq!(t.ipoc, 4008);
         assert_eq!(p.unknown(), 2);
         assert_eq!(p.missing(), 8);
+    }
+
+    #[test]
+    fn seen_reports_keywords_of_the_last_good_telegram() {
+        let s = schema(SHIPPED);
+        let mut p = Parser::new(&s);
+        let mut t = RobotTelegram::default();
+        assert!(!p.seen(Keyword::AIPos), "nothing parsed yet");
+        p.parse(SHIPPED_TELEGRAM, &mut t).unwrap();
+        assert!(p.seen(Keyword::AIPos) && p.seen(Keyword::ASPos) && p.seen(Keyword::Delay));
+        assert!(!p.seen(Keyword::MACur), "not in the schema");
+
+        p.parse(b"<Rob TYPE=\"KukaRsi\"><AIPos A1=\"1\" A2=\"0\" A3=\"0\" A4=\"0\" A5=\"0\" A6=\"0\" /><IPOC>8</IPOC></Rob>", &mut t).unwrap();
+        assert!(p.seen(Keyword::AIPos));
+        assert!(!p.seen(Keyword::ASPos), "absent from the last telegram, although its value is kept");
+        assert_eq!(t.aspos[0], 1.0);
+
+        // A telegram that fails to parse leaves the answer of the last good one.
+        assert!(p.parse(b"<Rob TYPE=\"KukaRsi\"><ASPos A1=\"2\" A2=\"0\" A3=\"0\" A4=\"0\" A5=\"0\" A6=\"0\" /></Rob>", &mut t).is_err());
+        assert!(p.seen(Keyword::AIPos));
+        assert!(!p.seen(Keyword::ASPos));
     }
 
     #[test]
