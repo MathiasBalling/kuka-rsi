@@ -2,7 +2,7 @@
 
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -10,7 +10,7 @@ use arrayvec::{ArrayString, ArrayVec};
 use crossbeam_queue::ArrayQueue;
 
 use crate::config::{DriverConfig, Limits};
-use crate::control::{Command, Session, MAX_CHUNK};
+use crate::control::{Command, Session, MAX_CHUNK, MAX_QUEUE};
 use crate::link::UdpLink;
 use crate::state::{RobotState, SessionState, StateMap};
 use crate::stats::{Event, Stats};
@@ -33,6 +33,8 @@ struct Shared {
     /// `wait_idle` never sees an empty command queue together with a `queue_len` (or state)
     /// from before the command was applied.
     pending: AtomicU32,
+    /// The session's command has reached the last target (`Session::is_settled`).
+    settled: AtomicBool,
     start: Instant,
 }
 
@@ -85,6 +87,8 @@ struct Rt {
     onlysend: bool,
     cycle: Duration,
     link_timeout: Duration,
+    /// IPOC increment between consecutive telegrams: the cycle in milliseconds.
+    ipoc_step: u64,
     map: StateMap,
     session: Session,
     tele: RobotTelegram,
@@ -102,10 +106,15 @@ struct Rt {
     log_tx: rtrb::Producer<RobotState>,
     last_rx: Option<Instant>,
     last_ipoc: Option<u64>,
-    ipoc_step: Option<u64>,
     latency_sum_us: u64,
     /// Commands popped from the queue and not yet released from `Shared::pending`.
     unsettled: u32,
+    /// Set by the first late reply of a burst, cleared by the next on-time reply.
+    late_alarm: bool,
+    /// Set by the first I/O error of a burst, cleared by an iteration without one.
+    io_alarm: bool,
+    /// An I/O error happened in the current iteration of `run_rt`.
+    io_failed: bool,
 }
 
 impl Rt {
@@ -137,6 +146,8 @@ impl Rt {
         // The atomics after the buffers: a caller that acts on them reads a state at least as new,
         // e.g. `wait_for_robot` sees `Active` only after the session's first reply was sent and
         // its state published, and `wait_idle` sees an empty queue with the final command.
+        // `settled` before `queue_len`, which `wait_idle` reads first.
+        self.shared.settled.store(self.session.is_settled(), Ordering::Release);
         self.shared.queue_len.store(self.stats.queue_len, Ordering::Release);
         self.shared.session.store(session_to_u8(self.state.session), Ordering::Release);
     }
@@ -155,14 +166,34 @@ impl Rt {
         }
     }
 
+    /// Count a socket error; one `IoError` event per burst.
+    fn io_error(&mut self) {
+        self.stats.io_errors += 1;
+        self.io_failed = true;
+        if !self.io_alarm {
+            self.io_alarm = true;
+            self.event(Event::IoError);
+        }
+    }
+
     fn lose_link(&mut self) {
         self.session.lost();
         self.link.reset_peer();
-        // The silence is not an inter-arrival time within a session.
-        self.last_rx = None;
         self.set_session(SessionState::Lost);
         self.drain_session_events();
         self.publish();
+    }
+
+    /// No telegram this iteration (receive timeout or error): detect a lost link, and outside a
+    /// session drain the command queue. Inside a session, commands wait for the next telegram: a
+    /// silence shorter than the link timeout must not reject them.
+    fn no_telegram(&mut self) {
+        if self.session.state() == SessionState::Active && self.last_rx.is_some_and(|t| t.elapsed() > self.link_timeout) {
+            self.lose_link();
+        }
+        if self.session.state() != SessionState::Active {
+            self.drain_commands_inactive();
+        }
     }
 
     /// Commands that arrive while no session is active: settings apply, motion is rejected.
@@ -181,20 +212,17 @@ impl Rt {
 
     fn cycle(&mut self) -> Result<()> {
         let Some(rx) = self.link.recv_newest(&mut self.rx)? else {
-            if self.session.state() == SessionState::Active && self.last_rx.is_some_and(|t| t.elapsed() > self.link_timeout) {
-                self.lose_link();
-            }
-            // Inside a session, commands wait for the next telegram: a silence shorter than the
-            // link timeout must not reject them.
-            if self.session.state() != SessionState::Active {
-                self.drain_commands_inactive();
-            }
+            self.no_telegram();
             return Ok(());
         };
         self.stats.skipped_datagrams += rx.skipped as u64;
-        if let Some(prev) = self.last_rx {
-            let ia = rx.arrived.duration_since(prev).as_micros() as u64;
-            self.stats.interarrival_max_us = self.stats.interarrival_max_us.max(ia);
+        // Inter-arrival times are measured within a session only: the first telegram of a
+        // session is the new reference, so gaps before it are not recorded.
+        if self.session.state() == SessionState::Active {
+            if let Some(prev) = self.last_rx {
+                let ia = rx.arrived.duration_since(prev).as_micros() as u64;
+                self.stats.interarrival_max_us = self.stats.interarrival_max_us.max(ia);
+            }
         }
         self.last_rx = Some(rx.arrived);
 
@@ -226,15 +254,11 @@ impl Rt {
             self.session.start(&self.tele);
             self.stats.sessions += 1;
             self.last_ipoc = None;
-            self.ipoc_step = None;
             self.set_session(SessionState::Active);
         }
         if let Some(prev) = self.last_ipoc {
-            let d = self.tele.ipoc.wrapping_sub(prev);
-            match self.ipoc_step {
-                None => self.ipoc_step = Some(d),
-                Some(s) if d != s => self.stats.ipoc_gaps += 1,
-                _ => {}
+            if self.tele.ipoc.wrapping_sub(prev) != self.ipoc_step {
+                self.stats.ipoc_gaps += 1;
             }
         }
         self.last_ipoc = Some(self.tele.ipoc);
@@ -253,16 +277,26 @@ impl Rt {
 
         if !self.onlysend {
             self.writer.write(&self.sen, &mut self.tx);
-            self.link.send(&self.tx)?;
-            let lat = rx.arrived.elapsed();
-            let us = lat.as_micros() as u64;
-            self.stats.replies += 1;
-            self.latency_sum_us += us;
-            self.stats.reply_latency_mean_us = self.latency_sum_us as f64 / self.stats.replies as f64;
-            self.stats.reply_latency_max_us = self.stats.reply_latency_max_us.max(us);
-            if lat > self.cycle {
-                self.stats.late_replies += 1;
-                self.event(Event::LateReply { latency_us: us });
+            // A failed reply is counted; the cycle's bookkeeping below still runs.
+            match self.link.send(&self.tx) {
+                Ok(()) => {
+                    let lat = rx.arrived.elapsed();
+                    let us = lat.as_micros() as u64;
+                    self.stats.replies += 1;
+                    self.latency_sum_us += us;
+                    self.stats.reply_latency_mean_us = self.latency_sum_us as f64 / self.stats.replies as f64;
+                    self.stats.reply_latency_max_us = self.stats.reply_latency_max_us.max(us);
+                    if lat > self.cycle {
+                        self.stats.late_replies += 1;
+                        if !self.late_alarm {
+                            self.late_alarm = true;
+                            self.event(Event::LateReply { latency_us: us });
+                        }
+                    } else {
+                        self.late_alarm = false;
+                    }
+                }
+                Err(_) => self.io_error(),
             }
         }
         self.state.q_command = q_cmd;
@@ -281,22 +315,37 @@ impl Rt {
 }
 
 fn run_rt(mut rt: Rt) {
+    let mut recv_errors = 0u32;
     while !rt.shared.stop.load(Ordering::Relaxed) {
+        rt.io_failed = false;
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rt.cycle())) {
-            Ok(Ok(())) => {}
+            Ok(Ok(())) => recv_errors = 0,
             Ok(Err(_)) => {
-                rt.stats.io_errors += 1;
-                rt.event(Event::IoError);
+                // Receiving failed: still watch the link and the command queue.
+                rt.io_error();
+                rt.no_telegram();
                 rt.publish();
+                recv_errors += 1;
             }
             Err(_) => {
+                recv_errors = 0;
                 rt.event(Event::Panic);
                 rt.lose_link();
             }
         }
         // After every path's last `publish`, including a cycle cut short by an error or a panic.
         rt.settle();
+        if !rt.io_failed {
+            rt.io_alarm = false;
+        }
+        // A receive error that repeats at once must not spin the loop.
+        if recv_errors >= 2 {
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
+    // Stopped by `close`: nobody answers the robot any more.
+    rt.set_session(SessionState::Lost);
+    rt.publish();
 }
 
 /// Handle to a running driver. Cheap to share behind an `Arc`.
@@ -316,12 +365,12 @@ const _: () = {
     assert_send_sync::<Driver>();
 };
 
-fn cycles_for(d: Duration, cycle: Duration, what: &str) -> Result<u32> {
+/// `d` in cycles, fractional: the interpolator plays fractions exactly.
+fn cycles_for(d: Duration, cycle: Duration, what: &str) -> Result<f64> {
     if d.is_zero() {
         return Err(Error::Limit(format!("{what} must be positive")));
     }
-    let n = (d.as_secs_f64() / cycle.as_secs_f64()).round().max(1.0);
-    Ok(n as u32)
+    Ok(d.as_secs_f64() / cycle.as_secs_f64())
 }
 
 fn short(msg: &str) -> ArrayString<56> {
@@ -364,6 +413,7 @@ impl Driver {
             session: AtomicU8::new(0),
             queue_len: AtomicU32::new(0),
             pending: AtomicU32::new(0),
+            settled: AtomicBool::new(true),
             start: Instant::now(),
         });
         let (state_in, state_out) = triple_buffer::triple_buffer(&RobotState::default());
@@ -375,6 +425,7 @@ impl Driver {
             onlysend: schema.onlysend,
             cycle: cfg.cycle,
             link_timeout: cfg.link_timeout,
+            ipoc_step: cfg.cycle.as_millis().max(1) as u64,
             map: StateMap::from_schema(&schema),
             session: Session::new(cfg.limits, cfg.cycle, stop_slot),
             link,
@@ -391,9 +442,11 @@ impl Driver {
             log_tx,
             last_rx: None,
             last_ipoc: None,
-            ipoc_step: None,
             latency_sum_us: 0,
             unsettled: 0,
+            late_alarm: false,
+            io_alarm: false,
+            io_failed: false,
         };
         let want_rt = cfg.rt_priority;
         let shared_rt = shared.clone();
@@ -472,7 +525,8 @@ impl Driver {
         }
     }
 
-    /// Block until every queued command has been applied and the target queue is empty.
+    /// Block until every queued command has been applied, the target queue is empty and the
+    /// command has reached the last target.
     pub fn wait_idle(&self, timeout: Duration) -> Result<()> {
         let t0 = Instant::now();
         loop {
@@ -484,8 +538,12 @@ impl Driver {
                 SessionState::Lost => return Err(Error::LinkLost(self.cfg.link_timeout)),
                 SessionState::Listening => return Err(Error::Protocol("robot not connected".into())),
             }
-            // `pending` first: once it reads zero, `queue_len` includes every applied command.
-            if self.shared.pending.load(Ordering::Acquire) == 0 && self.shared.queue_len.load(Ordering::Acquire) == 0 {
+            // `pending` first: once it reads zero, `queue_len` and `settled` include every applied
+            // command; `settled` after `queue_len` (the reverse of the order `publish` stores them).
+            if self.shared.pending.load(Ordering::Acquire) == 0
+                && self.shared.queue_len.load(Ordering::Acquire) == 0
+                && self.shared.settled.load(Ordering::Acquire)
+            {
                 return Ok(());
             }
             if t0.elapsed() >= timeout {
@@ -518,21 +576,39 @@ impl Driver {
         Ok(())
     }
 
-    /// Queue absolute joint targets (rad), `dt` apart. `replace` drops what was queued.
+    /// Queue absolute joint targets (rad), `dt` apart. `replace` drops what was queued. The call
+    /// is played whole or not at all.
     pub fn stream(&self, points: &[[f64; 6]], dt: Duration, replace: bool) -> Result<()> {
         self.require_active()?;
         let cycles = cycles_for(dt, self.cfg.cycle, "dt")?;
+        if points.len() > MAX_QUEUE {
+            return Err(Error::Limit(format!("{} points exceed the {MAX_QUEUE}-point target queue", points.len())));
+        }
         {
             let limits = self.limits.lock().unwrap();
             for p in points {
                 limits.check_position(p)?;
             }
         }
+        // Room for the whole call before anything is pushed. Both checks can race with playback
+        // and other callers; the real-time side then rejects the rest of a call once one of its
+        // chunks is rejected (`batch_remaining`).
+        let queued = if replace { 0 } else { self.stats().queue_len as usize };
+        if points.len() + queued > MAX_QUEUE {
+            return Err(Error::QueueFull);
+        }
+        let chunks = points.len().div_ceil(MAX_CHUNK);
+        if COMMAND_QUEUE.saturating_sub(self.shared.commands.len()) < chunks {
+            return Err(Error::QueueFull);
+        }
         let mut first = true;
+        let mut sent = 0;
         for chunk in points.chunks(MAX_CHUNK) {
             let mut arr: ArrayVec<[f64; 6], MAX_CHUNK> = ArrayVec::new();
             arr.extend(chunk.iter().copied());
-            self.send(Command::Stream { points: arr, cycles_per_point: cycles, replace: replace && first })?;
+            sent += chunk.len();
+            let batch_remaining = (points.len() - sent) as u32;
+            self.send(Command::Stream { points: arr, cycles_per_point: cycles, replace: replace && first, batch_remaining })?;
             first = false;
         }
         Ok(())
@@ -581,19 +657,23 @@ impl Driver {
 
     pub fn set_limits(&self, l: Limits) -> Result<()> {
         l.validate()?;
-        // Hold the lock across the push: a concurrent `stream` validates against the limits the
-        // real-time thread will apply, and a failed push leaves both sides unchanged.
+        // The API-side copy changes only once the command is queued, so a failed push leaves both
+        // sides unchanged. A concurrent `stream` releases this lock before its own push, so it may
+        // have validated its points against the old limits; `Session::apply` re-checks every point
+        // against the limits in force, and a rejection surfaces as `Event::CommandRejected`.
         let mut cur = self.limits.lock().unwrap();
         self.send(Command::SetLimits(l))?;
         *cur = l;
         Ok(())
     }
 
-    /// End the session cleanly if possible, then stop the thread. Idempotent.
+    /// End the session cleanly if possible, then stop the thread. Idempotent; a concurrent second
+    /// call returns once the thread has been joined.
     pub fn close(&self) -> Result<()> {
-        if self.shared.stop.load(Ordering::Relaxed) {
+        let mut rt = self.rt.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(handle) = rt.take() else {
             return Ok(());
-        }
+        };
         if self.cfg.stop_channel.is_some() && self.session() == SessionState::Active {
             let _ = self.send(Command::StopProgram);
             let t0 = Instant::now();
@@ -602,10 +682,7 @@ impl Driver {
             }
         }
         self.shared.stop.store(true, Ordering::Relaxed);
-        if let Some(h) = self.rt.lock().unwrap().take() {
-            h.join().map_err(|_| Error::Protocol("real-time thread panicked".into()))?;
-        }
-        Ok(())
+        handle.join().map_err(|_| Error::Protocol("real-time thread panicked".into()))
     }
 }
 

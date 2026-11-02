@@ -35,6 +35,9 @@ pub struct Session {
     clamp_active: [bool; 4],
     prev_counts: ClampCounts,
     events: ArrayVec<Event, 16>,
+    /// Points still to come from a `stream` call one of whose chunks was rejected; they are
+    /// rejected too, so a call is played whole or not at all.
+    reject_remaining: u32,
 }
 
 impl Session {
@@ -61,6 +64,7 @@ impl Session {
             clamp_active: [false; 4],
             prev_counts: ClampCounts::default(),
             events: ArrayVec::new(),
+            reject_remaining: 0,
         }
     }
 
@@ -82,6 +86,21 @@ impl Session {
 
     pub fn is_idle(&self) -> bool {
         self.interp.is_idle()
+    }
+
+    /// The target queue is empty and the command has reached the last target (the limiter is not
+    /// still catching up), or nothing has been commanded yet.
+    pub fn is_settled(&self) -> bool {
+        if !self.interp.is_idle() {
+            return false;
+        }
+        match self.limiter.last() {
+            None => true,
+            Some(last) => {
+                let target = self.interp.current();
+                (0..6).all(|i| (last[i] - target[i]).abs() <= 1e-9)
+            }
+        }
     }
 
     pub fn starved(&self) -> u64 {
@@ -117,6 +136,7 @@ impl Session {
         self.tracking_alarm = false;
         self.starved_alarm = false;
         self.clamp_active = [false; 4];
+        self.reject_remaining = 0;
         self.state = SessionState::Active;
         self.event(Event::RobotConnected { ipoc: tele.ipoc });
     }
@@ -131,27 +151,18 @@ impl Session {
 
     pub fn apply(&mut self, cmd: Command) -> Result<()> {
         match cmd {
-            Command::Stream { points, cycles_per_point, replace } => {
-                if self.frozen.is_some() {
-                    return Err(Error::Faulted);
-                }
-                for p in &points {
-                    self.limits.check_position(p)?;
-                }
-                // Accept the chunk whole or reject it whole: never park part of it and drop the rest.
-                let used = if replace { 0 } else { self.interp.len() };
-                if used + points.len() > MAX_QUEUE {
+            Command::Stream { points, cycles_per_point, replace, batch_remaining } => {
+                // Once a chunk of a `stream` call is rejected, the rest of the call is rejected
+                // too: playing the later chunks would draw a straight line across the gap.
+                if self.reject_remaining > 0 {
+                    self.reject_remaining = self.reject_remaining.saturating_sub(points.len() as u32);
                     return Err(Error::QueueFull);
                 }
-                if replace {
-                    self.interp.reset(self.limiter.last().unwrap_or(self.q_start));
+                let r = self.push_stream(&points, cycles_per_point, replace, batch_remaining);
+                if r.is_err() {
+                    self.reject_remaining = batch_remaining;
                 }
-                for p in points {
-                    if !self.interp.push(Segment { q_end: p, cycles: cycles_per_point.max(1), blend: Blend::Linear }) {
-                        return Err(Error::QueueFull);
-                    }
-                }
-                Ok(())
+                r
             }
             Command::MoveTo { q, cycles } => {
                 if self.frozen.is_some() {
@@ -159,7 +170,7 @@ impl Session {
                 }
                 self.limits.check_position(&q)?;
                 self.interp.reset(self.limiter.last().unwrap_or(self.q_start));
-                if !self.interp.push(Segment { q_end: q, cycles: cycles.max(1), blend: Blend::Quintic }) {
+                if !self.interp.push(Segment { q_end: q, cycles, blend: Blend::Quintic }) {
                     return Err(Error::QueueFull);
                 }
                 Ok(())
@@ -212,6 +223,30 @@ impl Session {
                 Ok(())
             }
         }
+    }
+
+    /// One chunk of a `stream` call, accepted whole or rejected whole.
+    fn push_stream(&mut self, points: &[[f64; 6]], cycles_per_point: f64, replace: bool, batch_remaining: u32) -> Result<()> {
+        if self.frozen.is_some() {
+            return Err(Error::Faulted);
+        }
+        for p in points {
+            self.limits.check_position(p)?;
+        }
+        // Room for this chunk and the rest of its call, so the call is never cut short midway.
+        let used = if replace { 0 } else { self.interp.len() };
+        if used + points.len() + batch_remaining as usize > MAX_QUEUE {
+            return Err(Error::QueueFull);
+        }
+        if replace {
+            self.interp.reset(self.limiter.last().unwrap_or(self.q_start));
+        }
+        for &p in points {
+            if !self.interp.push(Segment { q_end: p, cycles: cycles_per_point, blend: Blend::Linear }) {
+                return Err(Error::QueueFull);
+            }
+        }
+        Ok(())
     }
 
     /// Produce this cycle's reply. Returns the joint command (rad).
@@ -321,10 +356,10 @@ mod tests {
         (s, t)
     }
 
-    fn stream(q: [f64; 6], cycles: u32, replace: bool) -> Command {
+    fn stream(q: [f64; 6], cycles: f64, replace: bool) -> Command {
         let mut points = ArrayVec::new();
         points.push(q);
-        Command::Stream { points, cycles_per_point: cycles, replace }
+        Command::Stream { points, cycles_per_point: cycles, replace, batch_remaining: 0 }
     }
 
     fn run(s: &mut Session, t: &RobotTelegram, n: usize) -> SensorTelegram {
@@ -357,7 +392,7 @@ mod tests {
         let (mut s, t) = started();
         let mut q = s.q_start();
         q[0] += 0.02;
-        s.apply(stream(q, 10, false)).unwrap();
+        s.apply(stream(q, 10.0, false)).unwrap();
         assert_eq!(s.queue_len(), 1);
         let out = run(&mut s, &t, 5);
         assert!((out.ak[0] - 0.01f64.to_degrees()).abs() < 1e-9, "{:?}", out.ak);
@@ -372,7 +407,7 @@ mod tests {
         let (mut s, t) = started();
         let mut q = s.q_start();
         q[0] += 0.02;
-        s.apply(stream(q, 10, false)).unwrap();
+        s.apply(stream(q, 10.0, false)).unwrap();
         let mut st = state(&t);
         st.speed_override = 0.5;
         let mut out = SensorTelegram::default();
@@ -393,7 +428,7 @@ mod tests {
         let (mut s, t) = started();
         let mut q = s.q_start();
         q[0] += 0.02;
-        s.apply(stream(q, 10, false)).unwrap();
+        s.apply(stream(q, 10.0, false)).unwrap();
         run(&mut s, &t, 3);
         s.apply(Command::Fault(ArrayString::from("bad").unwrap())).unwrap();
         let frozen = run(&mut s, &t, 1);
@@ -404,7 +439,7 @@ mod tests {
         let after = run(&mut s, &t, 1);
         assert!(after.estr.is_empty());
         assert_eq!(after.ak, frozen.ak, "still frozen");
-        assert!(matches!(s.apply(stream(q, 10, false)), Err(Error::Faulted)), "targets rejected after a fault");
+        assert!(matches!(s.apply(stream(q, 10.0, false)), Err(Error::Faulted)), "targets rejected after a fault");
         assert!(s.take_events().contains(&Event::Fault));
     }
 
@@ -438,9 +473,9 @@ mod tests {
         let (mut s, _) = started();
         let mut q = s.q_start();
         q[0] = 4.0;
-        assert!(matches!(s.apply(stream(q, 10, false)), Err(Error::Limit(_))));
+        assert!(matches!(s.apply(stream(q, 10.0, false)), Err(Error::Limit(_))));
         q[0] = f64::NAN;
-        assert!(matches!(s.apply(stream(q, 10, false)), Err(Error::Limit(_))));
+        assert!(matches!(s.apply(stream(q, 10.0, false)), Err(Error::Limit(_))));
         assert!(matches!(s.apply(Command::SetSpeedScale(1.5)), Err(Error::Limit(_))));
         assert!(matches!(s.apply(Command::SetSpeedScale(-0.1)), Err(Error::Limit(_))));
         let mut bad = Limits::kr10_defaults();
@@ -458,9 +493,9 @@ mod tests {
             points.push(q);
         }
         for _ in 0..(MAX_QUEUE / MAX_CHUNK) {
-            s.apply(Command::Stream { points: points.clone(), cycles_per_point: 1, replace: false }).unwrap();
+            s.apply(Command::Stream { points: points.clone(), cycles_per_point: 1.0, replace: false, batch_remaining: 0 }).unwrap();
         }
-        assert!(matches!(s.apply(stream(q, 1, false)), Err(Error::QueueFull)));
+        assert!(matches!(s.apply(stream(q, 1.0, false)), Err(Error::QueueFull)));
     }
 
     #[test]
@@ -470,12 +505,12 @@ mod tests {
         a[0] += 0.02;
         let mut b = s.q_start();
         b[0] += 0.04;
-        s.apply(stream(a, 10, false)).unwrap();
-        s.apply(stream(b, 10, false)).unwrap();
+        s.apply(stream(a, 10.0, false)).unwrap();
+        s.apply(stream(b, 10.0, false)).unwrap();
         run(&mut s, &t, 5);
         let mut c = s.q_start();
         c[0] += 0.01;
-        s.apply(stream(c, 5, true)).unwrap();
+        s.apply(stream(c, 5.0, true)).unwrap();
         assert_eq!(s.queue_len(), 1);
         let out = run(&mut s, &t, 5);
         assert!((out.ak[0] - 0.01f64.to_degrees()).abs() < 1e-9, "{:?}", out.ak);
@@ -487,7 +522,7 @@ mod tests {
         let (mut s, t) = started();
         let mut q = s.q_start();
         q[0] += 0.02;
-        s.apply(stream(q, 10, false)).unwrap();
+        s.apply(stream(q, 10.0, false)).unwrap();
         run(&mut s, &t, 2);
         s.apply(Command::Hold).unwrap();
         assert!(s.is_idle());
@@ -495,7 +530,7 @@ mod tests {
         assert!((held.ak[0] - 0.004f64.to_degrees()).abs() < 1e-9, "{:?}", held.ak);
         let mut m = s.q_start();
         m[0] += 0.008;
-        s.apply(Command::MoveTo { q: m, cycles: 4 }).unwrap();
+        s.apply(Command::MoveTo { q: m, cycles: 4.0 }).unwrap();
         let out = run(&mut s, &t, 4);
         assert!((out.ak[0] - 0.008f64.to_degrees()).abs() < 1e-9, "{:?}", out.ak);
     }
@@ -523,7 +558,7 @@ mod tests {
         let (mut s, t) = started();
         let mut q = s.q_start();
         q[0] += 0.02;
-        s.apply(stream(q, 10, false)).unwrap();
+        s.apply(stream(q, 10.0, false)).unwrap();
         run(&mut s, &t, 3);
         s.lost();
         assert_eq!(s.state(), SessionState::Lost);
@@ -544,7 +579,7 @@ mod tests {
         let (mut s, t) = started();
         let mut q = s.q_start();
         q[0] += 0.02;
-        s.apply(stream(q, 10, false)).unwrap();
+        s.apply(stream(q, 10.0, false)).unwrap();
         s.apply(Command::SetSpeedScale(0.0)).unwrap();
         let out = run(&mut s, &t, 10);
         assert!(out.ak[0].abs() < 1e-9);
@@ -562,7 +597,7 @@ mod tests {
         let (mut s, t) = started();
         let mut q = s.q_start();
         q[0] += 0.2;
-        s.apply(stream(q, 1, false)).unwrap();
+        s.apply(stream(q, 1.0, false)).unwrap();
         let mut out = SensorTelegram::default();
         for _ in 0..10 {
             s.step(&t, &state(&t), &mut out);
@@ -577,7 +612,7 @@ mod tests {
         let (mut s, t) = started();
         let mut q = s.q_start();
         q[0] += 0.2;
-        s.apply(stream(q, 1, false)).unwrap();
+        s.apply(stream(q, 1.0, false)).unwrap();
         let out = run(&mut s, &t, 10);
         assert!((out.ak[0] - 0.04f64.to_degrees()).abs() < 1e-9, "{:?}", out.ak);
         s.apply(Command::Hold).unwrap();
@@ -594,16 +629,89 @@ mod tests {
             full.push(q);
         }
         for _ in 0..15 {
-            s.apply(Command::Stream { points: full.clone(), cycles_per_point: 1, replace: false }).unwrap();
+            s.apply(Command::Stream { points: full.clone(), cycles_per_point: 1.0, replace: false, batch_remaining: 0 }).unwrap();
         }
         let mut partial = ArrayVec::new();
         for _ in 0..40 {
             partial.push(q);
         }
-        s.apply(Command::Stream { points: partial, cycles_per_point: 1, replace: false }).unwrap();
+        s.apply(Command::Stream { points: partial, cycles_per_point: 1.0, replace: false, batch_remaining: 0 }).unwrap();
         assert_eq!(s.queue_len(), 1000);
-        assert!(matches!(s.apply(Command::Stream { points: full.clone(), cycles_per_point: 1, replace: false }), Err(Error::QueueFull)));
+        assert!(matches!(s.apply(Command::Stream { points: full.clone(), cycles_per_point: 1.0, replace: false, batch_remaining: 0 }), Err(Error::QueueFull)));
         assert_eq!(s.queue_len(), 1000);
+    }
+
+    fn chunk(q: [f64; 6], n: usize, batch_remaining: u32) -> Command {
+        let mut points = ArrayVec::new();
+        for _ in 0..n {
+            points.push(q);
+        }
+        Command::Stream { points, cycles_per_point: 1.0, replace: false, batch_remaining }
+    }
+
+    fn filled_to(n: usize) -> Session {
+        let (mut s, _) = started();
+        let q = s.q_start();
+        for _ in 0..n / MAX_CHUNK {
+            s.apply(chunk(q, MAX_CHUNK, 0)).unwrap();
+        }
+        s.apply(chunk(q, n % MAX_CHUNK, 0)).unwrap();
+        assert_eq!(s.queue_len(), n);
+        s
+    }
+
+    #[test]
+    fn partial_batch_rejects_the_rest() {
+        let mut s = filled_to(1000);
+        let q = s.q_start();
+        assert!(matches!(s.apply(chunk(q, 40, 30)), Err(Error::QueueFull)), "40 + 30 more do not fit");
+        assert!(matches!(s.apply(chunk(q, 30, 0)), Err(Error::QueueFull)), "the rest of the batch is rejected");
+        assert_eq!(s.queue_len(), 1000);
+        s.apply(chunk(q, 20, 0)).unwrap();
+        assert_eq!(s.queue_len(), 1020, "the next batch is accepted");
+
+        // The tail would fit on its own here (990 + 30), and is still rejected with its batch.
+        let mut s = filled_to(990);
+        assert!(matches!(s.apply(chunk(q, 40, 30)), Err(Error::QueueFull)));
+        assert!(matches!(s.apply(chunk(q, 30, 0)), Err(Error::QueueFull)));
+        assert_eq!(s.queue_len(), 990);
+        s.apply(chunk(q, 20, 0)).unwrap();
+        assert_eq!(s.queue_len(), 1010);
+    }
+
+    #[test]
+    fn rejected_batch_does_not_outlive_the_session() {
+        let mut s = filled_to(1000);
+        let q = s.q_start();
+        assert!(matches!(s.apply(chunk(q, 40, 30)), Err(Error::QueueFull)));
+        s.lost();
+        s.start(&tele(START_DEG, START_DEG, 2000));
+        s.apply(chunk(q, 30, 0)).unwrap();
+        assert_eq!(s.queue_len(), 30, "a new session starts without a pending batch rejection");
+    }
+
+    #[test]
+    fn settled_once_the_command_reaches_the_last_target() {
+        let (mut s, t) = started();
+        assert!(s.is_settled());
+        let mut q = s.q_start();
+        q[0] += 0.02;
+        s.apply(stream(q, 10.0, false)).unwrap();
+        assert!(!s.is_settled());
+        run(&mut s, &t, 9);
+        assert!(!s.is_settled());
+        run(&mut s, &t, 1);
+        assert!(s.is_settled());
+
+        // A velocity-limited jump: the queue drains in one cycle, the command takes longer.
+        let mut far = q;
+        far[0] += 0.02;
+        s.apply(stream(far, 1.0, false)).unwrap();
+        run(&mut s, &t, 1);
+        assert_eq!(s.queue_len(), 0);
+        assert!(!s.is_settled(), "limiter still catching up");
+        run(&mut s, &t, 10);
+        assert!(s.is_settled());
     }
 
     #[test]
@@ -623,7 +731,7 @@ mod tests {
         assert!(!s.take_events().iter().any(|e| matches!(e, Event::Starved)));
         let mut q = s.q_start();
         q[0] += 0.001;
-        s.apply(stream(q, 2, false)).unwrap();
+        s.apply(stream(q, 2.0, false)).unwrap();
         run(&mut s, &t, 2);
         s.apply(Command::Hold).unwrap();
         run(&mut s, &t, 5);

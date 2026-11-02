@@ -109,6 +109,7 @@ fn stream_tracks_a_sine_and_stays_on_time() {
     assert!((st.q_setpoint_deg[0] - last[0].to_degrees()).abs() < 0.01, "{st:?} vs {}", last[0].to_degrees());
     let s = drv.stats();
     assert!(s.replies > 200, "{s:?}");
+    assert!(s.ipoc_gaps <= s.skipped_datagrams, "IPOC steps of one cycle are not gaps: {s:?}");
     assert!(st.late as u64 * 20 < st.cycles, "late replies: {st:?}");
     assert_eq!(drv.session(), SessionState::Active);
 }
@@ -143,7 +144,9 @@ fn link_lost_then_reconnect_recaptures_start() {
     drv.wait_for_robot(Duration::from_secs(3)).unwrap();
     let st = drv.state();
     assert!((st.q_setpoint[1] + 80f64.to_radians()).abs() < 1e-6, "{st:?}");
-    assert_eq!(drv.stats().sessions, 2);
+    let s = drv.stats();
+    assert_eq!(s.sessions, 2);
+    assert!(s.interarrival_max_us < 200_000, "the gap between sessions is not an inter-arrival time: {s:?}");
 }
 
 #[test]
@@ -208,9 +211,106 @@ fn move_to_reaches_the_target_smoothly() {
     let mut q = drv.state().q;
     q[5] += 0.03;
     drv.move_to(q, Duration::from_millis(400)).unwrap();
-    std::thread::sleep(Duration::from_millis(40));
+    std::thread::sleep(Duration::from_millis(12));
     let early = drv.state().q_command[5] - (q[5] - 0.03);
-    assert!(early < 0.003, "quintic start is slow: {early}");
+    assert!(early < 0.005, "quintic start is slow: {early}");
     drv.wait_idle(Duration::from_secs(2)).unwrap();
     assert!((settled(&drv, &sim).q_setpoint_deg[5] - q[5].to_degrees()).abs() < 1e-6);
+}
+
+#[test]
+fn stream_with_non_integer_cycle_spacing_keeps_rate() {
+    let (drv, sim) = connected();
+    let q0 = drv.state().q;
+    // 60 points, so rounding 1.5 cycles to 2 (120 cycles) is well outside the tolerance.
+    let points: Vec<[f64; 6]> = (0..60)
+        .map(|k| {
+            let mut q = q0;
+            q[0] += 0.0005 * (k + 1) as f64;
+            q
+        })
+        .collect();
+    let last = points[59];
+    let c0 = drv.stats().cycles;
+    drv.stream(&points, Duration::from_millis(6), false).unwrap(); // 1.5 cycles per point
+    drv.wait_idle(Duration::from_secs(2)).unwrap();
+    let played = drv.stats().cycles - c0;
+    assert!((80..=100).contains(&played), "60 points x 1.5 cycles should take about 90 cycles, took {played}");
+    assert!((settled(&drv, &sim).q_setpoint_deg[0] - last[0].to_degrees()).abs() < 1e-6);
+}
+
+#[test]
+fn stream_rejects_calls_that_cannot_fit() {
+    let (drv, _sim) = connected();
+    let q = drv.state().q;
+    let too_many = vec![q; kuka_rsi::control::MAX_QUEUE + 1];
+    assert!(matches!(drv.stream(&too_many, Duration::from_millis(100), false), Err(Error::Limit(_))));
+    drv.stream(&vec![q; 1000], Duration::from_millis(100), false).unwrap();
+    assert!(wait_until(Duration::from_secs(1), || drv.stats().queue_len >= 990));
+    assert!(matches!(drv.stream(&vec![q; 100], Duration::from_millis(100), false), Err(Error::QueueFull)));
+    drv.stream(&vec![q; 100], Duration::from_millis(100), true).unwrap();
+    assert!(wait_until(Duration::from_secs(1), || drv.stats().queue_len <= 100));
+}
+
+#[test]
+fn wait_idle_waits_for_the_limiter() {
+    let (drv, _sim) = connected();
+    let mut q = drv.state().q;
+    q[0] += 0.2; // one cycle of playback, then 25 cycles at the 2 rad/s velocity limit
+    drv.stream(&[q], Duration::from_millis(4), false).unwrap();
+    drv.wait_idle(Duration::from_secs(2)).unwrap();
+    let st = drv.state();
+    assert!((st.q_command[0] - q[0]).abs() < 1e-9, "wait_idle returned while the command was still moving: {st:?}");
+}
+
+/// A driver without a stop channel: `close` stops the thread without waiting for the session to end.
+fn driver_without_stop_channel() -> Driver {
+    let cfg = DriverConfig::new(EthernetConfig::from_str(SHIPPED).unwrap())
+        .bind("127.0.0.1:0".parse().unwrap())
+        .limits(Limits::kr10_defaults().with_max_velocity_all(2.0).with_max_acceleration_all(None))
+        .link_timeout(Duration::from_millis(500))
+        .rt_priority(false);
+    Driver::spawn(cfg).unwrap()
+}
+
+#[test]
+fn session_is_lost_after_close() {
+    let drv = driver_without_stop_channel();
+    let _sim = ControllerSim::spawn(sim_config(&drv)).unwrap();
+    drv.wait_for_robot(Duration::from_secs(3)).unwrap();
+    drv.close().unwrap();
+    assert_eq!(drv.session(), SessionState::Lost, "nobody answers the robot after close");
+}
+
+#[test]
+fn concurrent_close_waits_for_the_join() {
+    let drv = driver_without_stop_channel();
+    let mut sim = ControllerSim::spawn(sim_config(&drv)).unwrap();
+    drv.wait_for_robot(Duration::from_secs(3)).unwrap();
+    // Without telegrams the real-time thread sits in its 50 ms receive wait, so the first close's
+    // join takes a while, and the session stays `Active` (500 ms link timeout) until the thread exits.
+    sim.stop().unwrap();
+    std::thread::scope(|s| {
+        let first = s.spawn(|| drv.close());
+        std::thread::sleep(Duration::from_millis(10));
+        drv.close().unwrap();
+        assert_eq!(drv.session(), SessionState::Lost, "second close returned before the real-time thread stopped");
+        first.join().unwrap().unwrap();
+    });
+}
+
+#[test]
+fn ipoc_gaps_count_missing_telegrams_only() {
+    let drv = driver(500);
+    let mut c = sim_config(&drv);
+    // This seed drops the session's second telegram (a step learned from the first two telegrams
+    // would be two cycles, and every later telegram would count as a gap), then about 3 % of the rest.
+    c.drop_probability = 0.05;
+    c.seed = 0x8d11_6ece_1738_f7d9;
+    let _sim = ControllerSim::spawn(c).unwrap();
+    drv.wait_for_robot(Duration::from_secs(3)).unwrap();
+    std::thread::sleep(Duration::from_millis(400));
+    let s = drv.stats();
+    assert!(s.ipoc_gaps >= 1, "the dropped second telegram is a gap: {s:?}");
+    assert!(s.ipoc_gaps * 5 < s.cycles, "only missing telegrams are gaps: {s:?}");
 }

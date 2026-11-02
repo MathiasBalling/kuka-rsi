@@ -11,7 +11,9 @@ pub enum Blend {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Segment {
     pub q_end: [f64; 6],
-    pub cycles: u32,
+    /// Playback length in cycles; fractional values play exactly (the leftover carries into the
+    /// next segment). Zero, negative or non-finite counts as one cycle.
+    pub cycles: f64,
     pub blend: Blend,
 }
 
@@ -30,7 +32,7 @@ pub struct Interpolator {
 
 impl Interpolator {
     pub fn new(q0: [f64; 6]) -> Interpolator {
-        let filler = Segment { q_end: q0, cycles: 1, blend: Blend::Linear };
+        let filler = Segment { q_end: q0, cycles: 1.0, blend: Blend::Linear };
         Interpolator { ring: vec![filler; MAX_QUEUE], head: 0, len: 0, seg_start: q0, current: q0, progress: 0.0, starved: 0, armed: false }
     }
 
@@ -94,7 +96,7 @@ impl Interpolator {
         self.progress += rate.max(0.0);
         loop {
             let seg = self.ring[self.head];
-            let cycles = seg.cycles.max(1) as f64;
+            let cycles = if seg.cycles > 0.0 && seg.cycles.is_finite() { seg.cycles } else { 1.0 };
             if self.progress >= cycles {
                 self.seg_start = seg.q_end;
                 self.current = seg.q_end;
@@ -127,14 +129,14 @@ impl Interpolator {
 mod tests {
     use super::*;
 
-    fn seg(v: f64, cycles: u32, blend: Blend) -> Segment {
+    fn seg(v: f64, cycles: f64, blend: Blend) -> Segment {
         Segment { q_end: [v; 6], cycles, blend }
     }
 
     #[test]
     fn linear_segment_advances_one_cycle_per_step() {
         let mut it = Interpolator::new([0.0; 6]);
-        assert!(it.push(seg(1.0, 4, Blend::Linear)));
+        assert!(it.push(seg(1.0, 4.0, Blend::Linear)));
         assert_eq!(it.len(), 1);
         assert!(!it.is_idle());
         assert_eq!(it.step(1.0)[0], 0.25);
@@ -149,7 +151,7 @@ mod tests {
     #[test]
     fn rate_scales_and_zero_pauses() {
         let mut it = Interpolator::new([0.0; 6]);
-        it.push(seg(1.0, 4, Blend::Linear));
+        it.push(seg(1.0, 4.0, Blend::Linear));
         assert_eq!(it.step(0.5)[0], 0.125);
         assert_eq!(it.step(0.0)[0], 0.125);
         assert_eq!(it.starved(), 0);
@@ -164,7 +166,7 @@ mod tests {
     #[test]
     fn quintic_is_smooth_at_the_ends_and_symmetric() {
         let mut it = Interpolator::new([0.0; 6]);
-        it.push(seg(1.0, 10, Blend::Quintic));
+        it.push(seg(1.0, 10.0, Blend::Quintic));
         let first = it.step(1.0)[0];
         assert!(first < 0.01, "slow start: {first}");
         for _ in 0..3 {
@@ -182,8 +184,8 @@ mod tests {
     #[test]
     fn segments_chain_and_leftover_progress_carries_over() {
         let mut it = Interpolator::new([0.0; 6]);
-        it.push(seg(1.0, 2, Blend::Linear));
-        it.push(seg(3.0, 2, Blend::Linear));
+        it.push(seg(1.0, 2.0, Blend::Linear));
+        it.push(seg(3.0, 2.0, Blend::Linear));
         assert_eq!(it.step(1.5)[0], 0.75);
         assert_eq!(it.step(1.5)[0], 2.0, "1.0 reached, then half of the second segment");
         assert_eq!(it.step(1.0)[0], 3.0);
@@ -191,16 +193,38 @@ mod tests {
     }
 
     #[test]
+    fn fractional_cycles_play_exactly() {
+        let mut it = Interpolator::new([0.0; 6]);
+        it.push(seg(1.0, 2.5, Blend::Linear));
+        for want in [0.4, 0.8, 1.0] {
+            let got = it.step(1.0)[0];
+            assert!((got - want).abs() < 1e-12, "{got} vs {want}");
+        }
+        assert!(it.is_idle());
+
+        // The leftover half cycle carries into the next segment: two 2.5-cycle segments take
+        // exactly five cycles.
+        let mut it = Interpolator::new([0.0; 6]);
+        it.push(seg(1.0, 2.5, Blend::Linear));
+        it.push(seg(2.0, 2.5, Blend::Linear));
+        for want in [0.4, 0.8, 1.2, 1.6, 2.0] {
+            let got = it.step(1.0)[0];
+            assert!((got - want).abs() < 1e-12, "{got} vs {want}");
+        }
+        assert!(it.is_idle());
+    }
+
+    #[test]
     fn replace_drops_the_queue_and_continues_from_current() {
         let mut it = Interpolator::new([0.0; 6]);
-        it.push(seg(1.0, 4, Blend::Linear));
-        it.push(seg(2.0, 4, Blend::Linear));
+        it.push(seg(1.0, 4.0, Blend::Linear));
+        it.push(seg(2.0, 4.0, Blend::Linear));
         it.step(1.0);
         assert_eq!(it.current()[0], 0.25);
         it.replace();
         assert_eq!(it.len(), 0);
         assert_eq!(it.step(1.0)[0], 0.25, "holds at the replaced position");
-        it.push(seg(0.75, 2, Blend::Linear));
+        it.push(seg(0.75, 2.0, Blend::Linear));
         assert_eq!(it.step(1.0)[0], 0.5);
         assert_eq!(it.step(1.0)[0], 0.75);
     }
@@ -209,9 +233,9 @@ mod tests {
     fn push_fails_when_full_and_zero_cycles_counts_as_one() {
         let mut it = Interpolator::new([0.0; 6]);
         for _ in 0..MAX_QUEUE {
-            assert!(it.push(seg(1.0, 0, Blend::Linear)));
+            assert!(it.push(seg(1.0, 0.0, Blend::Linear)));
         }
-        assert!(!it.push(seg(1.0, 1, Blend::Linear)));
+        assert!(!it.push(seg(1.0, 1.0, Blend::Linear)));
         assert_eq!(it.step(1.0)[0], 1.0);
         assert_eq!(it.len(), MAX_QUEUE - 1);
     }
@@ -219,7 +243,7 @@ mod tests {
     #[test]
     fn completed_quintic_move_does_not_starve() {
         let mut it = Interpolator::new([0.0; 6]);
-        it.push(seg(1.0, 4, Blend::Quintic));
+        it.push(seg(1.0, 4.0, Blend::Quintic));
         for _ in 0..4 {
             it.step(1.0);
         }
@@ -230,7 +254,7 @@ mod tests {
         assert_eq!(it.starved(), 0);
 
         let mut it = Interpolator::new([0.0; 6]);
-        it.push(seg(1.0, 4, Blend::Linear));
+        it.push(seg(1.0, 4.0, Blend::Linear));
         for _ in 0..4 {
             it.step(1.0);
         }
@@ -244,7 +268,7 @@ mod tests {
     #[test]
     fn reset_clears_everything() {
         let mut it = Interpolator::new([0.0; 6]);
-        it.push(seg(1.0, 4, Blend::Linear));
+        it.push(seg(1.0, 4.0, Blend::Linear));
         it.step(1.0);
         it.reset([5.0; 6]);
         assert!(it.is_idle());

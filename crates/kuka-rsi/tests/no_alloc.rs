@@ -104,7 +104,7 @@ fn hot_paths_do_not_allocate() {
     target[0] += 0.02;
     let mut points = ArrayVec::new();
     points.push(target);
-    session.apply(Command::Stream { points, cycles_per_point: 50, replace: false }).unwrap();
+    session.apply(Command::Stream { points, cycles_per_point: 50.0, replace: false, batch_remaining: 0 }).unwrap();
     session.apply(Command::Notify(ArrayString::from("hello").unwrap())).unwrap();
     let mut sen = SensorTelegram::default();
     session.step(&tele, &state, &mut sen);
