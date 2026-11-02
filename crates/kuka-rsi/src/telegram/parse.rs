@@ -1,5 +1,5 @@
-//! Parser for `<Rob>` telegrams. No allocation after construction: quick-xml reads
-//! borrowed events from the caller's buffer and values land in fixed arrays.
+//! Parser for `<Rob>` telegrams. No allocation after construction: `Reader::read_event`
+//! borrows events straight from the input slice and values land in fixed arrays.
 
 use quick_xml::events::{BytesStart, Event};
 
@@ -90,15 +90,22 @@ impl Parser {
         if name != "Rob" {
             return Err(ParseError::Root(name.to_string()));
         }
-        for a in e.attributes() {
+        let mut saw_type = false;
+        let mut attrs = e.attributes();
+        attrs.with_checks(false); // trusted wire data; avoids the per-call duplicate-name check allocation
+        for a in attrs {
             let a = a.map_err(|err| ParseError::Xml(err.to_string()))?;
             let key: &str = a.key.as_ref();
             if key.eq_ignore_ascii_case("TYPE") {
+                saw_type = true;
                 let got: &str = a.value.as_ref();
                 if got != self.schema.sentype {
                     return Err(ParseError::Sentype { got: got.to_string(), want: self.schema.sentype.clone() });
                 }
             }
+        }
+        if !saw_type {
+            return Err(ParseError::Sentype { got: String::new(), want: self.schema.sentype.clone() });
         }
         Ok(())
     }
@@ -115,7 +122,9 @@ impl Parser {
         match &self.schema.rob[idx] {
             RobElement::Keyword(k) => {
                 let names = k.attrs();
-                for a in e.attributes() {
+                let mut attrs = e.attributes();
+                attrs.with_checks(false); // trusted wire data; avoids the per-call duplicate-name check allocation
+                for a in attrs {
                     let a = a.map_err(|err| ParseError::Xml(err.to_string()))?;
                     let key: &str = a.key.as_ref();
                     let Some(i) = names.iter().position(|n| *n == key) else { continue };
@@ -134,7 +143,9 @@ impl Parser {
                 }
             }
             RobElement::Attrs { attrs, .. } => {
-                for a in e.attributes() {
+                let mut it = e.attributes();
+                it.with_checks(false); // trusted wire data; avoids the per-call duplicate-name check allocation
+                for a in it {
                     let a = a.map_err(|err| ParseError::Xml(err.to_string()))?;
                     let key: &str = a.key.as_ref();
                     if let Some(attr) = attrs.iter().find(|x| x.name == key) {
@@ -151,13 +162,12 @@ impl Parser {
     pub fn parse(&mut self, bytes: &[u8], out: &mut RobotTelegram) -> Result<(), ParseError> {
         let mut reader = quick_xml::Reader::from_reader(bytes);
         reader.config_mut().trim_text(true);
-        let mut buf: Vec<u8> = Vec::new(); // never grows: events borrow from `bytes`
         self.seen.iter_mut().for_each(|s| *s = false);
         let mut depth = 0usize;
         let mut got_ipoc = false;
         let mut text_target: Option<TextTarget> = None;
         loop {
-            let ev = reader.read_event_into(&mut buf).map_err(|e| ParseError::Xml(e.to_string()))?;
+            let ev = reader.read_event().map_err(|e| ParseError::Xml(e.to_string()))?;
             match ev {
                 Event::Eof => break,
                 Event::Start(e) => {
@@ -329,6 +339,10 @@ mod tests {
             p.parse(b"<Rob TYPE=\"Other\"><IPOC>1</IPOC></Rob>", &mut t),
             Err(ParseError::Sentype { got: "Other".into(), want: "KukaRsi".into() })
         );
+        assert_eq!(
+            p.parse(b"<Rob><IPOC>1</IPOC></Rob>", &mut t),
+            Err(ParseError::Sentype { got: String::new(), want: "KukaRsi".into() })
+        );
         assert_eq!(p.parse(b"<Rob TYPE=\"KukaRsi\"><Delay D=\"0\" /></Rob>", &mut t), Err(ParseError::MissingIpoc));
         assert!(matches!(p.parse(b"<Rob TYPE=\"KukaRsi\"><IPOC>x</IPOC></Rob>", &mut t), Err(ParseError::Number(_))));
         assert!(matches!(p.parse(b"<Rob TYPE=\"KukaRsi\"><IPOC>1</IPOC>", &mut t), Err(ParseError::Xml(_))));
@@ -358,5 +372,18 @@ mod tests {
             assert_eq!(t.aipos[0], i as f64);
             assert_eq!(t.ipoc, i * 4);
         }
+    }
+
+    #[test]
+    fn parse_does_not_allocate_after_warm_up() {
+        let s = schema(SHIPPED);
+        let mut p = Parser::new(&s);
+        let mut t = RobotTelegram::default();
+        p.parse(SHIPPED_TELEGRAM, &mut t).unwrap();
+        let before = crate::test_alloc::allocations();
+        for _ in 0..100 {
+            p.parse(SHIPPED_TELEGRAM, &mut t).unwrap();
+        }
+        assert_eq!(crate::test_alloc::allocations(), before, "parse must not allocate on the hot path");
     }
 }
