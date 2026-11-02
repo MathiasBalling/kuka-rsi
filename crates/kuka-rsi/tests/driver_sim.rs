@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use kuka_rsi::config::{DriverConfig, EthernetConfig, Limits};
 use kuka_rsi::driver::Driver;
 use kuka_rsi::sim::{ControllerSim, SimConfig, SimExit, SimHandle, SimStatus};
-use kuka_rsi::state::SessionState;
+use kuka_rsi::state::{RobotState, SessionState};
 use kuka_rsi::stats::Event;
 use kuka_rsi::Error;
 
@@ -221,21 +221,25 @@ fn move_to_reaches_the_target_smoothly() {
 #[test]
 fn stream_with_non_integer_cycle_spacing_keeps_rate() {
     let (drv, sim) = connected();
-    let q0 = drv.state().q;
-    // 60 points, so rounding 1.5 cycles to 2 (120 cycles) is well outside the tolerance.
+    let start = drv.state().q_command;
+    // 60 points, so rounding 1.5 cycles to 2 (120 cycles) or 1 (60) is far outside the tolerance.
     let points: Vec<[f64; 6]> = (0..60)
         .map(|k| {
-            let mut q = q0;
+            let mut q = start;
             q[0] += 0.0005 * (k + 1) as f64;
             q
         })
         .collect();
     let last = points[59];
-    let c0 = drv.stats().cycles;
     drv.stream(&points, Duration::from_millis(6), false).unwrap(); // 1.5 cycles per point
     drv.wait_idle(Duration::from_secs(2)).unwrap();
-    let played = drv.stats().cycles - c0;
-    assert!((80..=100).contains(&played), "60 points x 1.5 cycles should take about 90 cycles, took {played}");
+    // Played cycles from the log: from the first cycle off the start pose to the first at the last target.
+    let mut log = Vec::new();
+    drv.drain_log(&mut log);
+    let moved = log.iter().find(|s| (s.q_command[0] - start[0]).abs() > 1e-9).expect("the command never moved");
+    let reached = log.iter().find(|s| (s.q_command[0] - last[0]).abs() < 1e-9).expect("the command never reached the last target");
+    let played = reached.cycle - moved.cycle + 1;
+    assert!((88..=92).contains(&played), "60 points x 1.5 cycles should play in 90 cycles, took {played}");
     assert!((settled(&drv, &sim).q_setpoint_deg[0] - last[0].to_degrees()).abs() < 1e-6);
 }
 
@@ -313,4 +317,79 @@ fn ipoc_gaps_count_missing_telegrams_only() {
     let s = drv.stats();
     assert!(s.ipoc_gaps >= 1, "the dropped second telegram is a gap: {s:?}");
     assert!(s.ipoc_gaps * 5 < s.cycles, "only missing telegrams are gaps: {s:?}");
+}
+
+#[test]
+fn event_history_survives_until_read() {
+    let (drv, mut sim) = connected();
+    std::thread::sleep(Duration::from_millis(200));
+    sim.stop().unwrap();
+    assert!(wait_until(Duration::from_secs(2), || drv.session() == SessionState::Lost));
+    std::thread::sleep(Duration::from_millis(120));
+    let ev = drv.events();
+    assert!(ev.iter().any(|e| matches!(e, Event::RtPriority { .. })), "{ev:?}");
+    assert!(ev.iter().any(|e| matches!(e, Event::RobotConnected { .. })), "{ev:?}");
+    assert!(ev.contains(&Event::LinkLost), "{ev:?}");
+    assert!(drv.events().is_empty(), "drained");
+}
+
+/// Direction changes of joint `axis` in the logged command, ignoring steps below `eps`.
+fn direction_changes(log: &[RobotState], axis: usize, eps: f64) -> usize {
+    let mut changes = 0;
+    let mut dir = 0.0;
+    for w in log.windows(2) {
+        let d = w[1].q_command[axis] - w[0].q_command[axis];
+        if d.abs() > eps {
+            if dir != 0.0 && d.signum() != dir {
+                changes += 1;
+            }
+            dir = d.signum();
+        }
+    }
+    changes
+}
+
+#[test]
+fn concurrent_streams_do_not_interleave() {
+    let (drv, _sim) = connected();
+    let q0 = drv.state().q_command;
+    let mut q1 = q0;
+    q1[5] += 0.01;
+    let dt = Duration::from_millis(8);
+    let barrier = std::sync::Barrier::new(2);
+    std::thread::scope(|s| {
+        for q in [q0, q1] {
+            let (drv, barrier) = (&drv, &barrier);
+            s.spawn(move || {
+                barrier.wait();
+                drv.stream(&vec![q; 100], dt, false).unwrap();
+            });
+        }
+    });
+    drv.wait_idle(Duration::from_secs(5)).unwrap();
+    assert_eq!(drv.stats().queue_len, 0);
+    std::thread::sleep(Duration::from_millis(120));
+    let ev = drv.events();
+    assert!(!ev.contains(&Event::CommandRejected), "{ev:?}");
+    let mut log = Vec::new();
+    drv.drain_log(&mut log);
+    // Each call holds one target, so played one after the other the command moves between the two
+    // targets at most once; interleaved chunks would move it away from a target and back.
+    let changes = direction_changes(&log, 5, 1e-9);
+    assert!(changes <= 1, "A6 command changed direction {changes} times: the calls' chunks interleaved");
+}
+
+#[test]
+fn back_to_back_streams_that_cannot_both_fit_are_rejected() {
+    let (drv, _sim) = connected();
+    let q = drv.state().q_command;
+    let dt = Duration::from_millis(100);
+    drv.stream(&vec![q; 600], dt, false).unwrap();
+    // The first call may still be in the command queue, not yet counted in `queue_len`.
+    assert!(matches!(drv.stream(&vec![q; 600], dt, false), Err(Error::QueueFull)));
+    // Replacing drops whatever is ahead of the call, in flight or not.
+    drv.stream(&vec![q; 600], dt, true).unwrap();
+    std::thread::sleep(Duration::from_millis(120));
+    let ev = drv.events();
+    assert!(!ev.contains(&Event::CommandRejected), "{ev:?}");
 }

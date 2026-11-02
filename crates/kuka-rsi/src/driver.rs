@@ -1,7 +1,8 @@
 //! The driver: one real-time thread answering telegrams, and the handle callers use.
 
+use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -21,6 +22,8 @@ pub const COMMAND_QUEUE: usize = 256;
 pub const EVENT_QUEUE: usize = 1024;
 /// Every-cycle log ring: 32 s at 250 Hz.
 pub const LOG_CAPACITY: usize = 8192;
+/// Events kept for `Driver::events` until read; the oldest are dropped first.
+pub const EVENT_HISTORY: usize = 1024;
 
 struct Shared {
     commands: ArrayQueue<Command>,
@@ -35,6 +38,13 @@ struct Shared {
     pending: AtomicU32,
     /// The session's command has reached the last target (`Session::is_settled`).
     settled: AtomicBool,
+    /// Points of `Stream` commands pushed by `Driver::stream` and not yet counted in `queue_len`.
+    /// Raised before the push, lowered by the real-time thread after the `publish` that follows
+    /// the command's application or rejection, so `stream`'s room check never misses a point.
+    in_flight: AtomicUsize,
+    /// Set by `close` once the real-time thread has been joined: the monitor thread records the
+    /// last events and exits.
+    monitor_stop: AtomicBool,
     start: Instant,
 }
 
@@ -109,6 +119,8 @@ struct Rt {
     latency_sum_us: u64,
     /// Commands popped from the queue and not yet released from `Shared::pending`.
     unsettled: u32,
+    /// Points of the `Stream` commands among them, not yet released from `Shared::in_flight`.
+    unsettled_points: usize,
     /// Set by the first late reply of a burst, cleared by the next on-time reply.
     late_alarm: bool,
     /// Set by the first I/O error of a burst, cleared by an iteration without one.
@@ -155,11 +167,19 @@ impl Rt {
     fn pop_command(&mut self) -> Option<Command> {
         let cmd = self.shared.commands.pop()?;
         self.unsettled += 1;
+        if let Command::Stream { points, .. } = &cmd {
+            self.unsettled_points += points.len();
+        }
         Some(cmd)
     }
 
-    /// Release the popped commands from `pending`. Called after the `publish` that reflects them.
+    /// Release the popped commands from `pending` and their points from `in_flight`, accepted or
+    /// rejected. Called after the `publish` that reflects them.
     fn settle(&mut self) {
+        if self.unsettled_points > 0 {
+            self.shared.in_flight.fetch_sub(self.unsettled_points, Ordering::Release);
+            self.unsettled_points = 0;
+        }
         if self.unsettled > 0 {
             self.shared.pending.fetch_sub(self.unsettled, Ordering::Release);
             self.unsettled = 0;
@@ -348,6 +368,73 @@ fn run_rt(mut rt: Rt) {
     rt.publish();
 }
 
+/// Allows one log line per event kind (`Clamped(_)` is one kind) per `min_interval`.
+pub(crate) struct RateLimiter {
+    min_interval: Duration,
+    last: HashMap<std::mem::Discriminant<Event>, Instant>,
+}
+
+impl RateLimiter {
+    pub fn new(min_interval: Duration) -> RateLimiter {
+        RateLimiter { min_interval, last: HashMap::new() }
+    }
+
+    pub fn allow(&mut self, e: &Event, now: Instant) -> bool {
+        let key = std::mem::discriminant(e);
+        match self.last.get(&key) {
+            Some(t) if now.duration_since(*t) < self.min_interval => false,
+            _ => {
+                self.last.insert(key, now);
+                true
+            }
+        }
+    }
+}
+
+fn level_of(e: &Event) -> log::Level {
+    match e {
+        Event::LinkLost
+        | Event::LateReply { .. }
+        | Event::ParseError
+        | Event::SentypeMismatch
+        | Event::IoError
+        | Event::TrackingError { .. }
+        | Event::CommandRejected
+        | Event::Fault
+        | Event::Panic
+        | Event::LogDropped
+        | Event::Starved
+        | Event::RtPriority { ok: false } => log::Level::Warn,
+        _ => log::Level::Info,
+    }
+}
+
+/// Moves events from the real-time thread's queue into the history, logging them rate-limited.
+/// The real-time thread never logs. Runs until `close` has joined the real-time thread, so its
+/// last events are recorded too.
+fn run_monitor(shared: Arc<Shared>, history: Arc<Mutex<VecDeque<Event>>>) {
+    let mut rl = RateLimiter::new(Duration::from_secs(1));
+    loop {
+        // Read before draining: every event pushed before `close` set the flag is drained below.
+        let last = shared.monitor_stop.load(Ordering::Acquire);
+        while let Some(e) = shared.events.pop() {
+            if rl.allow(&e, Instant::now()) {
+                log::log!(target: "kuka_rsi", level_of(&e), "{e:?}");
+            }
+            let mut h = history.lock().unwrap_or_else(PoisonError::into_inner);
+            if h.len() == EVENT_HISTORY {
+                h.pop_front();
+            }
+            h.push_back(e);
+        }
+        if last {
+            return;
+        }
+        // `close` unparks the thread so it does not wait out the poll interval.
+        std::thread::park_timeout(Duration::from_millis(50));
+    }
+}
+
 /// Handle to a running driver. Cheap to share behind an `Arc`.
 pub struct Driver {
     cfg: DriverConfig,
@@ -357,6 +444,8 @@ pub struct Driver {
     stats_out: Mutex<triple_buffer::Output<Stats>>,
     log_rx: Mutex<rtrb::Consumer<RobotState>>,
     rt: Mutex<Option<JoinHandle<()>>>,
+    history: Arc<Mutex<VecDeque<Event>>>,
+    monitor: Mutex<Option<JoinHandle<()>>>,
     local_addr: SocketAddr,
 }
 
@@ -414,6 +503,8 @@ impl Driver {
             queue_len: AtomicU32::new(0),
             pending: AtomicU32::new(0),
             settled: AtomicBool::new(true),
+            in_flight: AtomicUsize::new(0),
+            monitor_stop: AtomicBool::new(false),
             start: Instant::now(),
         });
         let (state_in, state_out) = triple_buffer::triple_buffer(&RobotState::default());
@@ -444,6 +535,7 @@ impl Driver {
             last_ipoc: None,
             latency_sum_us: 0,
             unsettled: 0,
+            unsettled_points: 0,
             late_alarm: false,
             io_alarm: false,
             io_failed: false,
@@ -455,6 +547,18 @@ impl Driver {
             let _ = shared_rt.events.push(Event::RtPriority { ok });
             run_rt(rt);
         })?;
+        let history = Arc::new(Mutex::new(VecDeque::with_capacity(EVENT_HISTORY)));
+        let shared_mon = shared.clone();
+        let history_mon = history.clone();
+        let monitor = match std::thread::Builder::new().name("kuka-rsi-monitor".into()).spawn(move || run_monitor(shared_mon, history_mon)) {
+            Ok(m) => m,
+            Err(e) => {
+                // No `Driver` owns the real-time thread yet: stop it here.
+                shared.stop.store(true, Ordering::Relaxed);
+                let _ = handle.join();
+                return Err(e.into());
+            }
+        };
         Ok(Driver {
             limits: Mutex::new(cfg.limits),
             cfg,
@@ -463,6 +567,8 @@ impl Driver {
             stats_out: Mutex::new(stats_out),
             log_rx: Mutex::new(log_rx),
             rt: Mutex::new(Some(handle)),
+            history,
+            monitor: Mutex::new(Some(monitor)),
             local_addr,
         })
     }
@@ -488,13 +594,10 @@ impl Driver {
         *self.stats_out.lock().unwrap().read()
     }
 
-    /// Events since the last call.
+    /// Events recorded by the monitor thread since the last call (oldest first). The monitor
+    /// polls every 50 ms and keeps at most `EVENT_HISTORY` events, dropping the oldest.
     pub fn events(&self) -> Vec<Event> {
-        let mut v = Vec::new();
-        while let Some(e) = self.shared.events.pop() {
-            v.push(e);
-        }
-        v
+        self.history.lock().unwrap_or_else(PoisonError::into_inner).drain(..).collect()
     }
 
     /// Move every-cycle states logged since the last call into `out`; returns the count.
@@ -577,40 +680,52 @@ impl Driver {
     }
 
     /// Queue absolute joint targets (rad), `dt` apart. `replace` drops what was queued. The call
-    /// is played whole or not at all.
+    /// is accepted whole or rejected before anything is queued; a rejection detected later by the
+    /// real-time thread (a `fault` or a lost link between its chunks) truncates the call but never
+    /// cuts across the path. Concurrent calls are queued one after the other, never interleaved.
     pub fn stream(&self, points: &[[f64; 6]], dt: Duration, replace: bool) -> Result<()> {
         self.require_active()?;
         let cycles = cycles_for(dt, self.cfg.cycle, "dt")?;
         if points.len() > MAX_QUEUE {
             return Err(Error::Limit(format!("{} points exceed the {MAX_QUEUE}-point target queue", points.len())));
         }
-        {
-            let limits = self.limits.lock().unwrap();
-            for p in points {
-                limits.check_position(p)?;
-            }
+        // Held from validation through the last push: the chunks of concurrent calls cannot
+        // interleave in the command queue, and a `set_limits` cannot land between them.
+        let limits = self.limits.lock().unwrap();
+        for p in points {
+            limits.check_position(p)?;
         }
-        // Room for the whole call before anything is pushed. Both checks can race with playback
-        // and other callers; the real-time side then rejects the rest of a call once one of its
-        // chunks is rejected (`batch_remaining`).
-        let queued = if replace { 0 } else { self.stats().queue_len as usize };
-        if points.len() + queued > MAX_QUEUE {
-            return Err(Error::QueueFull);
+        // Room for the whole call before anything is pushed: the points in the target queue plus
+        // those of earlier calls still on their way to it. `in_flight` is read first: a chunk the
+        // real-time thread has released from it is already in the `queue_len` read after. With
+        // `replace`, everything ahead of the call is dropped by its first chunk.
+        if !replace {
+            let in_flight = self.shared.in_flight.load(Ordering::Acquire);
+            let queued = self.shared.queue_len.load(Ordering::Acquire) as usize;
+            if queued + in_flight + points.len() > MAX_QUEUE {
+                return Err(Error::QueueFull);
+            }
         }
         let chunks = points.len().div_ceil(MAX_CHUNK);
         if COMMAND_QUEUE.saturating_sub(self.shared.commands.len()) < chunks {
             return Err(Error::QueueFull);
         }
-        let mut first = true;
+        self.shared.in_flight.fetch_add(points.len(), Ordering::AcqRel);
         let mut sent = 0;
-        for chunk in points.chunks(MAX_CHUNK) {
+        for (i, chunk) in points.chunks(MAX_CHUNK).enumerate() {
             let mut arr: ArrayVec<[f64; 6], MAX_CHUNK> = ArrayVec::new();
             arr.extend(chunk.iter().copied());
+            let batch_remaining = (points.len() - sent - chunk.len()) as u32;
+            let cmd = Command::Stream { points: arr, cycles_per_point: cycles, replace: replace && i == 0, batch_remaining };
+            if let Err(e) = self.send(cmd) {
+                // Another caller filled the command queue or the driver closed: the points not
+                // pushed never reach the real-time thread.
+                self.shared.in_flight.fetch_sub(points.len() - sent, Ordering::AcqRel);
+                return Err(e);
+            }
             sent += chunk.len();
-            let batch_remaining = (points.len() - sent) as u32;
-            self.send(Command::Stream { points: arr, cycles_per_point: cycles, replace: replace && first, batch_remaining })?;
-            first = false;
         }
+        drop(limits);
         Ok(())
     }
 
@@ -658,9 +773,9 @@ impl Driver {
     pub fn set_limits(&self, l: Limits) -> Result<()> {
         l.validate()?;
         // The API-side copy changes only once the command is queued, so a failed push leaves both
-        // sides unchanged. A concurrent `stream` releases this lock before its own push, so it may
-        // have validated its points against the old limits; `Session::apply` re-checks every point
-        // against the limits in force, and a rejection surfaces as `Event::CommandRejected`.
+        // sides unchanged. `stream` holds this lock from validation through its last push, so the
+        // new limits land before or after a whole call, never between its chunks, and every point
+        // queued after them was validated against them.
         let mut cur = self.limits.lock().unwrap();
         self.send(Command::SetLimits(l))?;
         *cur = l;
@@ -682,12 +797,44 @@ impl Driver {
             }
         }
         self.shared.stop.store(true, Ordering::Relaxed);
-        handle.join().map_err(|_| Error::Protocol("real-time thread panicked".into()))
+        let joined = handle.join();
+        // The monitor outlives the real-time thread so its last events reach the history.
+        self.shared.monitor_stop.store(true, Ordering::Release);
+        if let Some(m) = self.monitor.lock().unwrap_or_else(PoisonError::into_inner).take() {
+            m.thread().unpark();
+            let _ = m.join();
+        }
+        joined.map_err(|_| Error::Protocol("real-time thread panicked".into()))
     }
 }
 
 impl Drop for Driver {
     fn drop(&mut self) {
         let _ = self.close();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::stats::ClampKind;
+
+    #[test]
+    fn rate_limiter_allows_one_per_kind_per_interval() {
+        let mut rl = RateLimiter::new(Duration::from_secs(1));
+        let t0 = Instant::now();
+        assert!(rl.allow(&Event::LateReply { latency_us: 1 }, t0));
+        assert!(!rl.allow(&Event::LateReply { latency_us: 2 }, t0 + Duration::from_millis(500)));
+        assert!(rl.allow(&Event::Clamped(ClampKind::Velocity), t0 + Duration::from_millis(500)), "different kind");
+        assert!(!rl.allow(&Event::Clamped(ClampKind::Position), t0 + Duration::from_millis(600)), "same kind: Clamped");
+        assert!(rl.allow(&Event::LateReply { latency_us: 3 }, t0 + Duration::from_millis(1001)));
+    }
+
+    #[test]
+    fn event_level_split() {
+        assert_eq!(level_of(&Event::LinkLost), log::Level::Warn);
+        assert_eq!(level_of(&Event::RobotConnected { ipoc: 1 }), log::Level::Info);
+        assert_eq!(level_of(&Event::RtPriority { ok: false }), log::Level::Warn);
+        assert_eq!(level_of(&Event::RtPriority { ok: true }), log::Level::Info);
     }
 }
