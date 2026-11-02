@@ -438,7 +438,10 @@ fn run_monitor(shared: Arc<Shared>, history: Arc<Mutex<VecDeque<Event>>>) {
 /// Handle to a running driver. Cheap to share behind an `Arc`.
 pub struct Driver {
     cfg: DriverConfig,
-    limits: Mutex<Limits>,
+    /// The API-side copy of the limits. Held by every call that queues motion or limits
+    /// (`stream`, `move_to`, `hold`, `set_limits`) across its push, so none lands between the
+    /// chunks of a `stream` call.
+    motion: Mutex<Limits>,
     shared: Arc<Shared>,
     state_out: Mutex<triple_buffer::Output<RobotState>>,
     stats_out: Mutex<triple_buffer::Output<Stats>>,
@@ -560,7 +563,7 @@ impl Driver {
             }
         };
         Ok(Driver {
-            limits: Mutex::new(cfg.limits),
+            motion: Mutex::new(cfg.limits),
             cfg,
             shared,
             state_out: Mutex::new(state_out),
@@ -680,18 +683,21 @@ impl Driver {
     }
 
     /// Queue absolute joint targets (rad), `dt` apart. `replace` drops what was queued. The call
-    /// is accepted whole or rejected before anything is queued; a rejection detected later by the
-    /// real-time thread (a `fault` or a lost link between its chunks) truncates the call but never
-    /// cuts across the path. Concurrent calls are queued one after the other, never interleaved.
+    /// is accepted whole or rejected before anything is queued. No other `stream`, `hold`,
+    /// `move_to` or `set_limits` can land between its chunks; a `fault` or a lost link between them
+    /// truncates the call but never cuts across the path. Right after a call that drops the queue
+    /// (a `replace` call, `hold`, `move_to`), the room check may count the dropped points for up to
+    /// one cycle, so a call immediately following it can be refused with `QueueFull` although it
+    /// would fit; retrying after a cycle succeeds.
     pub fn stream(&self, points: &[[f64; 6]], dt: Duration, replace: bool) -> Result<()> {
         self.require_active()?;
         let cycles = cycles_for(dt, self.cfg.cycle, "dt")?;
         if points.len() > MAX_QUEUE {
             return Err(Error::Limit(format!("{} points exceed the {MAX_QUEUE}-point target queue", points.len())));
         }
-        // Held from validation through the last push: the chunks of concurrent calls cannot
-        // interleave in the command queue, and a `set_limits` cannot land between them.
-        let limits = self.limits.lock().unwrap();
+        // Held from validation through the last push: no other motion or limits command can land
+        // between this call's chunks in the command queue.
+        let limits = self.motion.lock().unwrap();
         for p in points {
             limits.check_position(p)?;
         }
@@ -733,12 +739,17 @@ impl Driver {
     pub fn move_to(&self, q: [f64; 6], duration: Duration) -> Result<()> {
         self.require_active()?;
         let cycles = cycles_for(duration, self.cfg.cycle, "duration")?;
-        self.limits.lock().unwrap().check_position(&q)?;
+        // Held across the push: the move never lands between the chunks of a `stream` call.
+        let limits = self.motion.lock().unwrap();
+        limits.check_position(&q)?;
         self.send(Command::MoveTo { q, cycles })
     }
 
     /// Drop the queue and hold the current command.
     pub fn hold(&self) -> Result<()> {
+        // Held across the push: the hold never lands between the chunks of a `stream` call, whose
+        // later chunks would then play from the hold point. A poisoned lock must not prevent a hold.
+        let _motion = self.motion.lock().unwrap_or_else(PoisonError::into_inner);
         self.send(Command::Hold)
     }
 
@@ -776,7 +787,7 @@ impl Driver {
         // sides unchanged. `stream` holds this lock from validation through its last push, so the
         // new limits land before or after a whole call, never between its chunks, and every point
         // queued after them was validated against them.
-        let mut cur = self.limits.lock().unwrap();
+        let mut cur = self.motion.lock().unwrap();
         self.send(Command::SetLimits(l))?;
         *cur = l;
         Ok(())

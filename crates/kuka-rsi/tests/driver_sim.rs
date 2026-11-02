@@ -333,36 +333,53 @@ fn event_history_survives_until_read() {
     assert!(drv.events().is_empty(), "drained");
 }
 
-/// Direction changes of joint `axis` in the logged command, ignoring steps below `eps`.
-fn direction_changes(log: &[RobotState], axis: usize, eps: f64) -> usize {
-    let mut changes = 0;
-    let mut dir = 0.0;
-    for w in log.windows(2) {
-        let d = w[1].q_command[axis] - w[0].q_command[axis];
-        if d.abs() > eps {
-            if dir != 0.0 && d.signum() != dir {
-                changes += 1;
-            }
-            dir = d.signum();
-        }
-    }
-    changes
+/// The first log index at which joint `axis` of the command is off `from`.
+fn first_move(log: &[RobotState], axis: usize, from: f64) -> Option<usize> {
+    log.iter().position(|s| (s.q_command[axis] - from).abs() > 1e-9)
+}
+
+/// Two ramps, `(axis, final value)`, each on its own axis from `q0`, were played one after the
+/// other: the axis that moved first reached its final value before the other axis moved.
+fn assert_ramps_in_sequence(log: &[RobotState], q0: [f64; 6], ramps: [(usize, f64); 2]) {
+    let starts = ramps.map(|(axis, _)| first_move(log, axis, q0[axis]).unwrap_or_else(|| panic!("A{} never moved", axis + 1)));
+    let (first, second) = if starts[0] < starts[1] { (0, 1) } else { (1, 0) };
+    let (axis, end) = ramps[first];
+    let done = log[..starts[second]].iter().any(|s| (s.q_command[axis] - end).abs() < 1e-9);
+    assert!(
+        done,
+        "A{} started moving at log index {} before the A{} ramp (from index {}) reached its end: the calls' chunks interleaved",
+        ramps[second].0 + 1,
+        starts[second],
+        axis + 1,
+        starts[first]
+    );
+}
+
+/// 100 points ramping joint `axis` from `q0` in steps of 1e-4 rad.
+fn ramp(q0: [f64; 6], axis: usize) -> Vec<[f64; 6]> {
+    (1..=100)
+        .map(|k| {
+            let mut q = q0;
+            q[axis] = q0[axis] + k as f64 * 1e-4;
+            q
+        })
+        .collect()
 }
 
 #[test]
 fn concurrent_streams_do_not_interleave() {
     let (drv, _sim) = connected();
     let q0 = drv.state().q_command;
-    let mut q1 = q0;
-    q1[5] += 0.01;
+    let (a, b) = (ramp(q0, 5), ramp(q0, 1));
+    let ramps = [(5, a[99][5]), (1, b[99][1])];
     let dt = Duration::from_millis(8);
     let barrier = std::sync::Barrier::new(2);
     std::thread::scope(|s| {
-        for q in [q0, q1] {
+        for points in [&a, &b] {
             let (drv, barrier) = (&drv, &barrier);
             s.spawn(move || {
                 barrier.wait();
-                drv.stream(&vec![q; 100], dt, false).unwrap();
+                drv.stream(points, dt, false).unwrap();
             });
         }
     });
@@ -373,10 +390,7 @@ fn concurrent_streams_do_not_interleave() {
     assert!(!ev.contains(&Event::CommandRejected), "{ev:?}");
     let mut log = Vec::new();
     drv.drain_log(&mut log);
-    // Each call holds one target, so played one after the other the command moves between the two
-    // targets at most once; interleaved chunks would move it away from a target and back.
-    let changes = direction_changes(&log, 5, 1e-9);
-    assert!(changes <= 1, "A6 command changed direction {changes} times: the calls' chunks interleaved");
+    assert_ramps_in_sequence(&log, q0, ramps);
 }
 
 #[test]
