@@ -6,7 +6,10 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use kuka_rsi::config::EthernetConfig;
+use kuka_rsi::link::UdpLink;
 use kuka_rsi::telegram::{Parser, RobotTelegram, Schema, SensorTelegram, Writer};
+use std::net::UdpSocket;
+use std::time::Duration;
 
 struct Counting;
 
@@ -66,4 +69,25 @@ fn hot_paths_do_not_allocate() {
     }
     assert_eq!(allocations(), before, "Writer::write must not allocate on the hot path");
     assert!(out.ends_with(b"<IPOC>4004</IPOC></Sen>"));
+
+    // Link: after one warm-up exchange, a hundred receive/reply cycles must not touch the allocator.
+    let mut link = UdpLink::bind("127.0.0.1:0".parse().unwrap(), Duration::from_millis(200)).unwrap();
+    let robot = UdpSocket::bind("127.0.0.1:0").unwrap();
+    robot.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+    let link_addr = link.local_addr().unwrap();
+    let mut rx = vec![0u8; 65536];
+    let mut reply = [0u8; 512];
+    robot.send_to(TELEGRAM, link_addr).unwrap();
+    link.recv_newest(&mut rx).unwrap().unwrap();
+    link.send(&out).unwrap();
+    robot.recv_from(&mut reply).unwrap();
+    let before = allocations();
+    for _ in 0..100 {
+        robot.send_to(TELEGRAM, link_addr).unwrap();
+        let got = link.recv_newest(&mut rx).unwrap().unwrap();
+        assert_eq!(got.len, TELEGRAM.len());
+        link.send(&out).unwrap();
+        robot.recv_from(&mut reply).unwrap();
+    }
+    assert_eq!(allocations(), before, "UdpLink recv/send must not allocate on the hot path");
 }

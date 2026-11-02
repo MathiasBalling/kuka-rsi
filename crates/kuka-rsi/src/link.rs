@@ -21,6 +21,7 @@ pub struct UdpLink {
     peer: Option<SocketAddr>,
     scratch: Vec<u8>,
     foreign: u64,
+    read_timeout: Duration,
 }
 
 impl UdpLink {
@@ -32,7 +33,7 @@ impl UdpLink {
         sock.bind(&addr.into()).map_err(|e| Error::Io(std::io::Error::new(e.kind(), format!("cannot bind UDP {addr}: {e}"))))?;
         let socket: UdpSocket = sock.into();
         socket.set_read_timeout(Some(read_timeout))?;
-        Ok(UdpLink { socket, peer: None, scratch: vec![0u8; 65536], foreign: 0 })
+        Ok(UdpLink { socket, peer: None, scratch: vec![0u8; 65536], foreign: 0, read_timeout })
     }
 
     pub fn local_addr(&self) -> Result<SocketAddr> {
@@ -65,27 +66,61 @@ impl UdpLink {
 
     /// Wait up to the read timeout for a datagram from the peer, then discard any older
     /// queued datagrams and return the newest. `None` on timeout.
+    ///
+    /// A datagram larger than `buf` is an error (`Error::Protocol`), not a silent
+    /// truncation. Datagrams from a source other than the peer are counted in
+    /// `foreign` and do not extend the overall wait past `read_timeout`, even if they
+    /// keep arriving.
     pub fn recv_newest(&mut self, buf: &mut [u8]) -> Result<Option<Received>> {
+        let deadline = Instant::now() + self.read_timeout;
+        let mut shortened = false;
+
         let mut result = loop {
             match self.socket.recv_from(&mut self.scratch) {
                 Ok((n, from)) => {
                     if self.accept(from) {
-                        let n = n.min(buf.len());
+                        if n > buf.len() {
+                            self.restore_read_timeout(shortened)?;
+                            return Err(Error::Protocol(format!(
+                                "datagram of {n} bytes exceeds the {} byte buffer",
+                                buf.len()
+                            )));
+                        }
                         buf[..n].copy_from_slice(&self.scratch[..n]);
                         break Received { len: n, from, arrived: Instant::now(), skipped: 0 };
                     }
                     self.foreign += 1;
+                    let now = Instant::now();
+                    if now >= deadline {
+                        self.restore_read_timeout(shortened)?;
+                        return Ok(None);
+                    }
+                    self.socket.set_read_timeout(Some(deadline - now))?;
+                    shortened = true;
                 }
-                Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => return Ok(None),
-                Err(e) => return Err(e.into()),
+                Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                    self.restore_read_timeout(shortened)?;
+                    return Ok(None);
+                }
+                Err(e) => {
+                    self.restore_read_timeout(shortened)?;
+                    return Err(e.into());
+                }
             }
         };
+        self.restore_read_timeout(shortened)?;
+
         self.socket.set_nonblocking(true)?;
         let drained = loop {
             match self.socket.recv_from(&mut self.scratch) {
                 Ok((n, from)) => {
                     if self.accept(from) {
-                        let n = n.min(buf.len());
+                        if n > buf.len() {
+                            break Err(Error::Protocol(format!(
+                                "datagram of {n} bytes exceeds the {} byte buffer",
+                                buf.len()
+                            )));
+                        }
                         buf[..n].copy_from_slice(&self.scratch[..n]);
                         result.len = n;
                         result.from = from;
@@ -102,6 +137,15 @@ impl UdpLink {
         self.socket.set_nonblocking(false)?;
         drained?;
         Ok(Some(result))
+    }
+
+    /// Restore the socket's read timeout to `self.read_timeout` if it was shortened to
+    /// respect an overall deadline while waiting out a run of foreign datagrams.
+    fn restore_read_timeout(&self, shortened: bool) -> Result<()> {
+        if shortened {
+            self.socket.set_read_timeout(Some(self.read_timeout))?;
+        }
+        Ok(())
     }
 
     /// Send a reply to the locked peer.
@@ -194,5 +238,47 @@ mod tests {
     fn bind_twice_fails() {
         let l = link();
         assert!(UdpLink::bind(l.local_addr().unwrap(), Duration::from_millis(10)).is_err());
+    }
+
+    #[test]
+    fn oversized_datagram_is_an_error() {
+        let mut l = link();
+        let robot = UdpSocket::bind("127.0.0.1:0").unwrap();
+        robot.send_to(b"0123456789abcdef", l.local_addr().unwrap()).unwrap();
+        let mut buf = [0u8; 8];
+        let result = l.recv_newest(&mut buf);
+        assert!(matches!(result, Err(Error::Protocol(_))), "{result:?}");
+        robot.send_to(b"WXYZ", l.local_addr().unwrap()).unwrap();
+        let r = l.recv_newest(&mut buf).unwrap().unwrap();
+        assert_eq!(&buf[..r.len], b"WXYZ", "socket must be back in blocking mode with its timeout");
+    }
+
+    #[test]
+    fn foreign_flood_does_not_extend_the_wait() {
+        let mut l = link();
+        let addr = l.local_addr().unwrap();
+
+        // Lock the peer first so the flood below is genuinely foreign, not the datagram
+        // that locks the peer.
+        let robot = UdpSocket::bind("127.0.0.1:0").unwrap();
+        robot.send_to(b"lock", addr).unwrap();
+        let mut buf = [0u8; 64];
+        l.recv_newest(&mut buf).unwrap().unwrap();
+
+        let other = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let handle = std::thread::spawn(move || {
+            for _ in 0..40 {
+                other.send_to(b"x", addr).unwrap();
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        });
+
+        let t0 = Instant::now();
+        let r = l.recv_newest(&mut buf).unwrap();
+        let elapsed = t0.elapsed();
+        assert!(r.is_none());
+        assert!(elapsed < Duration::from_millis(200), "elapsed = {elapsed:?}");
+        assert!(l.foreign() >= 5, "foreign = {}", l.foreign());
+        handle.join().unwrap();
     }
 }
