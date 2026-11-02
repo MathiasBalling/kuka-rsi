@@ -1,4 +1,7 @@
 import pathlib
+import subprocess
+import sys
+import textwrap
 import time
 
 import numpy as np
@@ -151,3 +154,27 @@ def test_fault_is_visible_and_refuses_motion():
     assert issubclass(kuka_rsi.Faulted, kuka_rsi.Error)
     assert not issubclass(kuka_rsi.Faulted, kuka_rsi.LimitError)
     drv.close()
+
+
+def test_driver_dealloc_does_not_deadlock():
+    # Dropping a Driver without close() runs its close under the GIL; the monitor thread logs
+    # through pyo3-log and needs the GIL too. Run in a subprocess so a deadlock cannot hang pytest.
+    code = textwrap.dedent(
+        f"""
+        import logging
+        import kuka_rsi
+
+        drv = kuka_rsi.Driver({str(CONFIG)!r}, bind="127.0.0.1:0", stop_channel="MoveStop", rt_priority=False)
+        sim = kuka_rsi.ControllerSim({str(CONFIG)!r}, target=drv.local_addr(), bind="127.0.0.1:0")
+        drv.wait_for_robot(3.0)
+        logging.basicConfig()
+        logging.getLogger("kuka_rsi").setLevel(logging.INFO)
+        del drv
+        sim.stop()
+        """
+    )
+    try:
+        proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=15)
+    except subprocess.TimeoutExpired:
+        pytest.fail("dropping a Driver without close() did not finish within 15 s (deadlock)")
+    assert proc.returncode == 0, proc.stderr

@@ -455,8 +455,31 @@ fn points_from(points: PyReadonlyArrayDyn<'_, f64>) -> PyResult<Vec<[f64; 6]>> {
 
 #[pyclass(name = "Driver", module = "kuka_rsi")]
 pub struct PyDriver {
-    inner: Driver,
+    /// `None` once `close()` has taken the driver out: every method then raises
+    /// `Error("driver is closed")`.
+    inner: Option<Driver>,
     wait: f64,
+}
+
+impl PyDriver {
+    fn driver(&self) -> PyResult<&Driver> {
+        self.inner.as_ref().ok_or_else(|| Error::new_err("driver is closed"))
+    }
+}
+
+/// Dropped without `close()` (e.g. `del drv`): `Driver::close` joins the monitor thread, which
+/// may be waiting for the GIL to log through pyo3-log, so the GIL is released while closing.
+/// Closing under the GIL here deadlocks.
+impl Drop for PyDriver {
+    fn drop(&mut self) {
+        if let Some(driver) = self.inner.take() {
+            Python::attach(|py| {
+                py.detach(move || {
+                    let _ = driver.close();
+                })
+            });
+        }
+    }
 }
 
 #[pymethods]
@@ -485,24 +508,25 @@ impl PyDriver {
             cfg = cfg.stop_channel(s);
         }
         cfg = cfg.link_timeout(Duration::from_secs_f64(link_timeout)).rt_priority(rt_priority).cycle(Duration::from_secs_f64(cycle_ms / 1000.0));
-        Ok(PyDriver { inner: Driver::spawn(cfg).map_err(to_py)?, wait })
+        Ok(PyDriver { inner: Some(Driver::spawn(cfg).map_err(to_py)?), wait })
     }
 
-    fn local_addr(&self) -> String {
-        self.inner.local_addr().to_string()
+    fn local_addr(&self) -> PyResult<String> {
+        Ok(self.driver()?.local_addr().to_string())
     }
 
-    fn session(&self) -> &'static str {
-        session_name(self.inner.session())
+    fn session(&self) -> PyResult<&'static str> {
+        Ok(session_name(self.driver()?.session()))
     }
 
-    fn is_faulted(&self) -> bool {
-        self.inner.is_faulted()
+    fn is_faulted(&self) -> PyResult<bool> {
+        Ok(self.driver()?.is_faulted())
     }
 
     #[pyo3(signature = (timeout=60.0))]
     fn wait_for_robot(&self, py: Python<'_>, timeout: f64) -> PyResult<()> {
-        py.detach(|| self.inner.wait_for_robot(Duration::from_secs_f64(timeout))).map_err(to_py)
+        let d = self.driver()?;
+        py.detach(|| d.wait_for_robot(Duration::from_secs_f64(timeout))).map_err(to_py)
     }
 
     /// Waits for every queued command to be applied, the target queue to be empty and the
@@ -511,33 +535,35 @@ impl PyDriver {
     /// the target, or the program is paused, for longer than `timeout`.
     #[pyo3(signature = (timeout=10.0))]
     fn wait_idle(&self, py: Python<'_>, timeout: f64) -> PyResult<()> {
-        py.detach(|| self.inner.wait_idle(Duration::from_secs_f64(timeout))).map_err(to_py)
+        let d = self.driver()?;
+        py.detach(|| d.wait_idle(Duration::from_secs_f64(timeout))).map_err(to_py)
     }
 
-    fn state(&self) -> PyRobotState {
-        PyRobotState { inner: self.inner.state() }
+    fn state(&self) -> PyResult<PyRobotState> {
+        Ok(PyRobotState { inner: self.driver()?.state() })
     }
 
-    fn stats(&self) -> PyStats {
-        PyStats { inner: self.inner.stats() }
+    fn stats(&self) -> PyResult<PyStats> {
+        Ok(PyStats { inner: self.driver()?.stats() })
     }
 
-    fn events(&self) -> Vec<String> {
-        self.inner.events().iter().map(|e| format!("{e:?}")).collect()
+    fn events(&self) -> PyResult<Vec<String>> {
+        Ok(self.driver()?.events().iter().map(|e| format!("{e:?}")).collect())
     }
 
-    fn drain_log(&self) -> Vec<PyRobotState> {
+    fn drain_log(&self) -> PyResult<Vec<PyRobotState>> {
         let mut v = Vec::new();
-        self.inner.drain_log(&mut v);
-        v.into_iter().map(|s| PyRobotState { inner: s }).collect()
+        self.driver()?.drain_log(&mut v);
+        Ok(v.into_iter().map(|s| PyRobotState { inner: s }).collect())
     }
 
     #[pyo3(signature = (points, dt, replace=false))]
     fn stream(&self, py: Python<'_>, points: &Bound<'_, PyAny>, dt: f64, replace: bool) -> PyResult<()> {
+        let d = self.driver()?;
         let arr = as_f64_array(py, points)?;
         let arr: PyReadonlyArrayDyn<'_, f64> = arr.extract()?;
         let pts = points_from(arr)?;
-        self.inner.stream(&pts, Duration::from_secs_f64(dt.max(0.0)), replace).map_err(to_py)
+        d.stream(&pts, Duration::from_secs_f64(dt.max(0.0)), replace).map_err(to_py)
     }
 
     /// `duration + 5.0` s of headroom past the requested duration when `block=True`, so a
@@ -545,54 +571,76 @@ impl PyDriver {
     /// of raising `TimeoutError` early.
     #[pyo3(signature = (q, duration, block=false))]
     fn move_to(&self, py: Python<'_>, q: &Bound<'_, PyAny>, duration: f64, block: bool) -> PyResult<()> {
+        let d = self.driver()?;
         let arr = as_f64_array(py, q)?;
         let arr: PyReadonlyArray1<'_, f64> = arr.extract()?;
         let q = arr6(arr, "q")?;
-        self.inner.move_to(q, Duration::from_secs_f64(duration.max(0.0))).map_err(to_py)?;
+        d.move_to(q, Duration::from_secs_f64(duration.max(0.0))).map_err(to_py)?;
         if block {
-            py.detach(|| self.inner.wait_idle(Duration::from_secs_f64(duration + 5.0))).map_err(to_py)?;
+            py.detach(|| d.wait_idle(Duration::from_secs_f64(duration + 5.0))).map_err(to_py)?;
         }
         Ok(())
     }
 
     fn hold(&self) -> PyResult<()> {
-        self.inner.hold().map_err(to_py)
+        self.driver()?.hold().map_err(to_py)
     }
 
     fn fault(&self, msg: &str) -> PyResult<()> {
-        self.inner.fault(msg).map_err(to_py)
+        self.driver()?.fault(msg).map_err(to_py)
     }
 
     fn notify(&self, msg: &str) -> PyResult<()> {
-        self.inner.notify(msg).map_err(to_py)
+        self.driver()?.notify(msg).map_err(to_py)
     }
 
     fn stop_program(&self) -> PyResult<()> {
-        self.inner.stop_program().map_err(to_py)
+        self.driver()?.stop_program().map_err(to_py)
     }
 
     fn set_speed_scale(&self, s: f64) -> PyResult<()> {
-        self.inner.set_speed_scale(s).map_err(to_py)
+        self.driver()?.set_speed_scale(s).map_err(to_py)
     }
 
     fn set_limits(&self, limits: &PyLimits) -> PyResult<()> {
-        self.inner.set_limits(limits.inner).map_err(to_py)
+        self.driver()?.set_limits(limits.inner).map_err(to_py)
     }
 
-    fn close(&self, py: Python<'_>) -> PyResult<()> {
-        py.detach(|| self.inner.close()).map_err(to_py)
+    /// Takes the driver out and closes it with the GIL released. Idempotent. If another thread
+    /// is inside a blocking call on this object (it holds a borrow, so the driver cannot be taken
+    /// out), the driver is closed in place instead, which ends that call, and freed on dealloc.
+    fn close(slf: &Bound<'_, Self>, py: Python<'_>) -> PyResult<()> {
+        let taken = match slf.try_borrow_mut() {
+            Ok(mut me) => me.inner.take(),
+            Err(_) => {
+                let me = slf.try_borrow()?;
+                let Some(d) = me.inner.as_ref() else { return Ok(()) };
+                return py.detach(|| d.close()).map_err(to_py);
+            }
+        };
+        match taken {
+            // The driver is dropped inside `detach` too; its own `Drop` finds it closed.
+            Some(d) => py.detach(move || d.close()).map_err(to_py),
+            None => Ok(()),
+        }
     }
 
     fn __enter__<'a>(slf: PyRef<'a, Self>, py: Python<'a>) -> PyResult<PyRef<'a, Self>> {
         let wait = slf.wait;
-        let inner: &Driver = &slf.inner; // `&Driver` is Send; a `PyRef` is not
+        let inner: &Driver = slf.driver()?; // `&Driver` is Send; a `PyRef` is not
         py.detach(|| inner.wait_for_robot(Duration::from_secs_f64(wait))).map_err(to_py)?;
         Ok(slf)
     }
 
     #[pyo3(signature = (_t=None, _v=None, _tb=None))]
-    fn __exit__(&self, py: Python<'_>, _t: Option<Bound<'_, PyAny>>, _v: Option<Bound<'_, PyAny>>, _tb: Option<Bound<'_, PyAny>>) -> PyResult<bool> {
-        self.close(py)?;
+    fn __exit__(
+        slf: &Bound<'_, Self>,
+        py: Python<'_>,
+        _t: Option<Bound<'_, PyAny>>,
+        _v: Option<Bound<'_, PyAny>>,
+        _tb: Option<Bound<'_, PyAny>>,
+    ) -> PyResult<bool> {
+        Self::close(slf, py)?;
         Ok(false)
     }
 }
