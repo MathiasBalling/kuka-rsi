@@ -1,0 +1,19 @@
+[project]
+name = "kuka-rsi"
+version = "0.1.0"
+description = "KUKA RSI 5.0 driver: joint streaming over the 4 ms UDP cycle (Rust core)"
+authors = [{ name = "Mathias Balling", email = "math260r@gmail.com" }]
+requires-python = ">=3.14"
+dependencies = ["numpy>=2.5"]
+
+[build-system]
+requires = ["maturin>=1.15,<2"]
+build-backend = "maturin"
+
+[tool.maturin]
+python-source = "python"
+module-name = "kuka_rsi._core"
+features = ["pyo3/extension-module"]
+
+[dependency-groups]
+dev = ["pytest>=8"]
