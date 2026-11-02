@@ -6,6 +6,7 @@ pub mod config;
 pub mod control;
 pub mod error;
 pub mod link;
+pub mod sim;
 pub mod state;
 pub mod stats;
 pub mod telegram;
