@@ -3,6 +3,7 @@
 //! See `docs/design.md`.
 
 pub mod config;
+pub mod control;
 pub mod error;
 pub mod link;
 pub mod state;
