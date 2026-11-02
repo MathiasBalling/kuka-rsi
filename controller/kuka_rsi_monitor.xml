@@ -1,0 +1,37 @@
+<ROOT>
+   <CONFIG>
+      <IP_NUMBER>192.168.10.10</IP_NUMBER>   <!-- this PC, on the RSI sensor subnet -->
+      <PORT>49152</PORT>                     <!-- UDP port the driver binds -->
+      <SENTYPE>KukaRsi</SENTYPE>              <!-- Type attribute of every <Sen> reply -->
+      <ONLYSEND>TRUE</ONLYSEND>              <!-- TRUE: read-only monitor, the robot expects no reply -->
+   </CONFIG>
+   <SEND>
+      <ELEMENTS>
+         <ELEMENT TAG="DEF_RIst" TYPE="DOUBLE" INDX="INTERNAL" />    <!-- Cartesian actual, mm/deg -->
+         <ELEMENT TAG="DEF_RSol" TYPE="DOUBLE" INDX="INTERNAL" />    <!-- Cartesian setpoint -->
+         <ELEMENT TAG="DEF_AIPos" TYPE="DOUBLE" INDX="INTERNAL" />   <!-- axis actual A1..A6, deg -->
+         <ELEMENT TAG="DEF_ASPos" TYPE="DOUBLE" INDX="INTERNAL" />   <!-- axis setpoint A1..A6 -->
+         <ELEMENT TAG="DEF_Delay" TYPE="LONG" INDX="INTERNAL" />     <!-- late packets counted by the robot -->
+         <ELEMENT TAG="GearTorque.A1" TYPE="DOUBLE" INDX="1" />
+         <ELEMENT TAG="GearTorque.A2" TYPE="DOUBLE" INDX="2" />
+         <ELEMENT TAG="GearTorque.A3" TYPE="DOUBLE" INDX="3" />
+         <ELEMENT TAG="GearTorque.A4" TYPE="DOUBLE" INDX="4" />
+         <ELEMENT TAG="GearTorque.A5" TYPE="DOUBLE" INDX="5" />
+         <ELEMENT TAG="GearTorque.A6" TYPE="DOUBLE" INDX="6" />
+         <ELEMENT TAG="ProgStatus.R" TYPE="LONG" INDX="7" />         <!-- $PRO_STATE: 3 = running -->
+         <ELEMENT TAG="OvPro.R" TYPE="DOUBLE" INDX="8" />            <!-- $OV_PRO, percent -->
+      </ELEMENTS>
+   </SEND>
+   <RECEIVE>
+      <ELEMENTS>
+         <ELEMENT TAG="AK.A1" TYPE="DOUBLE" INDX="1" HOLDON="1" />   <!-- axis correction, deg, absolute -->
+         <ELEMENT TAG="AK.A2" TYPE="DOUBLE" INDX="2" HOLDON="1" />
+         <ELEMENT TAG="AK.A3" TYPE="DOUBLE" INDX="3" HOLDON="1" />
+         <ELEMENT TAG="AK.A4" TYPE="DOUBLE" INDX="4" HOLDON="1" />
+         <ELEMENT TAG="AK.A5" TYPE="DOUBLE" INDX="5" HOLDON="1" />
+         <ELEMENT TAG="AK.A6" TYPE="DOUBLE" INDX="6" HOLDON="1" />
+         <ELEMENT TAG="MoveStop" TYPE="BOOL" INDX="7" HOLDON="0" />  <!-- rising edge ends RSI_MOVECORR -->
+         <ELEMENT TAG="DEF_EStr" TYPE="STRING" INDX="INTERNAL" />   <!-- message; "Error: ..." stops the robot -->
+      </ELEMENTS>
+   </RECEIVE>
+</ROOT>
