@@ -12,23 +12,36 @@ pub struct ClampCounts {
     pub correction: u64,
 }
 
+/// Per-cycle position, velocity, acceleration and correction clamps. With an acceleration limit,
+/// the closing speed toward the target is bounded by the braking distance relative to the
+/// target's own velocity, so a feasible moving target is tracked without lag while a stopped,
+/// drained or jumped-behind target is approached without overshoot ringing.
 pub struct Limiter {
     limits: Limits,
     dt: f64,
     prev: Option<[f64; 6]>,
     prev_delta: [f64; 6],
+    prev_target: Option<[f64; 6]>,
     counts: ClampCounts,
 }
 
 impl Limiter {
     pub fn new(limits: Limits, cycle: Duration) -> Limiter {
-        Limiter { limits, dt: cycle.as_secs_f64(), prev: None, prev_delta: [0.0; 6], counts: ClampCounts::default() }
+        Limiter {
+            limits,
+            dt: cycle.as_secs_f64(),
+            prev: None,
+            prev_delta: [0.0; 6],
+            prev_target: None,
+            counts: ClampCounts::default(),
+        }
     }
 
     /// Start tracking from `q` with zero velocity.
     pub fn reset(&mut self, q: [f64; 6]) {
         self.prev = Some(q);
         self.prev_delta = [0.0; 6];
+        self.prev_target = None;
     }
 
     pub fn set_limits(&mut self, limits: Limits) {
@@ -44,9 +57,11 @@ impl Limiter {
         self.counts
     }
 
-    /// Clamp `target` and return the command for this cycle: position, then velocity, then a
-    /// braking-aware acceleration bound (so decelerating toward a stopped or reversed target
-    /// never overshoots and rings) followed by the existing change-of-delta clamp, then correction.
+    /// Clamp `target` and return the command for this cycle: position, then velocity, then —
+    /// with an acceleration limit — the closing speed toward the target bounded by the braking
+    /// distance relative to the target's own velocity, so a feasible moving target is tracked
+    /// without lag while a stopped, drained or jumped-behind target is approached without
+    /// overshoot ringing, followed by the existing change-of-delta clamp, then correction.
     pub fn step(&mut self, target: [f64; 6], q_start: [f64; 6]) -> [f64; 6] {
         let l = &self.limits;
         let mut q = target;
@@ -58,6 +73,7 @@ impl Limiter {
                 q[i] = c;
             }
         }
+        let target_clamped = q;
         let Some(prev) = self.prev else {
             self.counts.position += hit.position;
             self.prev = Some(q);
@@ -75,17 +91,33 @@ impl Limiter {
             }
             if let Some(a) = l.max_acceleration {
                 let a = a[i];
-                let d = (q[i] - prev[i]).abs();
-                // Fastest speed from which the target can still be reached with deceleration <= a,
-                // minus one cycle of deceleration so the discrete step never needs more than a;
-                // but never slower than closing the remaining gap in one accelerating step.
-                let v_brake = ((2.0 * a * d).sqrt() - a * self.dt).max((d / self.dt).min(a * self.dt));
-                let dmax = v_brake * self.dt;
-                let c = delta[i].clamp(-dmax, dmax);
-                if c != delta[i] {
-                    hit.acceleration = 1;
-                    delta[i] = c;
+                let vmax = l.max_velocity[i];
+                // The target's own per-cycle velocity (rad/s), bounded by the velocity limit so a
+                // replaced chunk that jumps cannot fake a huge speed. Zero on the first step after reset.
+                let vt = match self.prev_target {
+                    Some(pt) => ((q[i] - pt[i]) / self.dt).clamp(-vmax, vmax),
+                    None => 0.0,
+                };
+                // Closing speed toward the target from which it can still be matched with
+                // deceleration <= a, minus one cycle of deceleration; never slower than closing
+                // the remaining gap in one accelerating step.
+                let gap = q[i] - prev[i];
+                let d = gap.abs();
+                let v_close = ((2.0 * a * d).sqrt() - a * self.dt).max((d / self.dt).min(a * self.dt));
+                // Bound only the component of the motion that closes the gap; moving away or moving
+                // with the target is left to the velocity and change-of-delta clamps.
+                if gap > 0.0 {
+                    let upper = vt * self.dt + v_close * self.dt;
+                    if delta[i] > upper {
+                        delta[i] = upper;
+                    }
+                } else if gap < 0.0 {
+                    let lower = vt * self.dt - v_close * self.dt;
+                    if delta[i] < lower {
+                        delta[i] = lower;
+                    }
                 }
+                // Change of delta (acceleration) — this one still counts as a clamp.
                 let amax = a * self.dt * self.dt;
                 let c = delta[i].clamp(self.prev_delta[i] - amax, self.prev_delta[i] + amax);
                 if c != delta[i] {
@@ -108,6 +140,7 @@ impl Limiter {
         self.counts.correction += hit.correction;
         self.prev_delta = delta;
         self.prev = Some(q);
+        self.prev_target = Some(target_clamped);
         q
     }
 }
@@ -246,5 +279,89 @@ mod tests {
         assert!(max_overshoot <= 0.05 + 0.004 + 1e-9, "overshoot {max_overshoot}");
         assert!(reversals <= 1, "ringing: {reversals} reversals");
         assert!((prev - hold[0]).abs() < 1e-6, "did not settle: {prev} vs {}", hold[0]);
+    }
+
+    /// Drives `lim` toward a target that advances `step_per_cycle` each cycle from `start`, returning
+    /// (positions, targets) for `n` cycles.
+    fn track(lim: &mut Limiter, start: f64, step_per_cycle: f64, n: usize) -> (Vec<f64>, Vec<f64>) {
+        let mut qs = Vec::with_capacity(n);
+        let mut ts = Vec::with_capacity(n);
+        for k in 1..=n {
+            let t = start + step_per_cycle * k as f64;
+            let q = lim.step([t, 0.0, 0.0, 0.0, 0.0, 0.0], [0.0; 6]);
+            qs.push(q[0]);
+            ts.push(t);
+        }
+        (qs, ts)
+    }
+
+    fn reversals(qs: &[f64]) -> usize {
+        let mut count = 0;
+        let mut dir = 0.0f64;
+        for w in qs.windows(2) {
+            let s = w[1] - w[0];
+            if s.abs() > 1e-12 {
+                if dir != 0.0 && s.signum() != dir {
+                    count += 1;
+                }
+                dir = s.signum();
+            }
+        }
+        count
+    }
+
+    #[test]
+    fn feasible_steady_stream_is_tracked_without_lag() {
+        let mut lim = with_accel();
+        let (qs, ts) = track(&mut lim, 0.0, 0.002, 400); // 0.5 rad/s, half the velocity limit
+        assert_eq!(reversals(&qs), 0, "qs[..40] = {:?}", &qs[..40.min(qs.len())]);
+        let lag = (ts[399] - qs[399]).abs();
+        assert!(lag < 1e-9, "steady-state lag {lag}; qs[..40] = {:?}, ts[..40] = {:?}", &qs[..40], &ts[..40]);
+        let before = lim.counts().acceleration;
+        track(&mut lim, ts[399], 0.002, 100);
+        assert_eq!(lim.counts().acceleration, before, "no acceleration clamps while tracking a feasible stream");
+    }
+
+    #[test]
+    fn catching_up_to_a_slow_target_does_not_ring() {
+        let mut lim = with_accel();
+        let (qs, ts) = track(&mut lim, 0.1, 0.0005, 400); // target starts 0.1 rad ahead, moves at 0.125 rad/s
+        assert!(reversals(&qs) <= 1, "{} reversals; qs[..40] = {:?}, ts[..40] = {:?}", reversals(&qs), &qs[..40], &ts[..40]);
+        assert!(
+            (ts[399] - qs[399]).abs() < 1e-6,
+            "not tracking: {} vs {}; qs[..40] = {:?}, ts[..40] = {:?}",
+            qs[399],
+            ts[399],
+            &qs[..40],
+            &ts[..40]
+        );
+    }
+
+    #[test]
+    fn drained_stream_stops_without_ringing() {
+        let mut lim = with_accel();
+        let (_, ts) = track(&mut lim, 0.0, 0.004, 100); // full speed
+        let stop = ts[99];
+        let mut qs = Vec::new();
+        for _ in 0..600 {
+            qs.push(lim.step([stop, 0.0, 0.0, 0.0, 0.0, 0.0], [0.0; 6])[0]);
+        }
+        assert!(reversals(&qs) <= 1, "{} reversals; qs[..40] = {:?}", reversals(&qs), &qs[..40]);
+        assert!((qs[599] - stop).abs() < 1e-6, "qs[..40] = {:?}", &qs[..40]);
+        let overshoot = qs.iter().cloned().fold(f64::MIN, f64::max) - stop;
+        assert!(overshoot <= 0.05 + 0.004 + 1e-9, "overshoot {overshoot}; qs[..40] = {:?}", &qs[..40]); // v²/(2a) + one cycle
+    }
+
+    #[test]
+    fn target_jumping_behind_while_moving_reverses_once() {
+        let mut lim = with_accel();
+        let (qs0, _) = track(&mut lim, 0.0, 0.004, 100);
+        let back = qs0[99] - 0.2;
+        let mut qs = Vec::new();
+        for _ in 0..800 {
+            qs.push(lim.step([back, 0.0, 0.0, 0.0, 0.0, 0.0], [0.0; 6])[0]);
+        }
+        assert!(reversals(&qs) <= 1, "{} reversals; qs[..40] = {:?}", reversals(&qs), &qs[..40]);
+        assert!((qs[799] - back).abs() < 1e-6, "did not settle: {}; qs[..40] = {:?}", qs[799], &qs[..40]);
     }
 }
