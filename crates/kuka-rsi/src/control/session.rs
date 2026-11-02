@@ -632,7 +632,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "stop slot")]
     fn stop_slot_out_of_range_panics() {
         Session::new(Limits::kr10_defaults(), Duration::from_millis(4), Some(64));
     }

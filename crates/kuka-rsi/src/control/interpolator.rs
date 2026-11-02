@@ -102,6 +102,10 @@ impl Interpolator {
                 self.pop_front();
                 if self.len == 0 {
                     self.progress = 0.0;
+                    if seg.blend == Blend::Quintic {
+                        // A completed point-to-point move is deliberate idleness, not starvation.
+                        self.armed = false;
+                    }
                     return self.current;
                 }
                 continue;
@@ -210,6 +214,31 @@ mod tests {
         assert!(!it.push(seg(1.0, 1, Blend::Linear)));
         assert_eq!(it.step(1.0)[0], 1.0);
         assert_eq!(it.len(), MAX_QUEUE - 1);
+    }
+
+    #[test]
+    fn completed_quintic_move_does_not_starve() {
+        let mut it = Interpolator::new([0.0; 6]);
+        it.push(seg(1.0, 4, Blend::Quintic));
+        for _ in 0..4 {
+            it.step(1.0);
+        }
+        assert!(it.is_idle());
+        for _ in 0..3 {
+            it.step(1.0);
+        }
+        assert_eq!(it.starved(), 0);
+
+        let mut it = Interpolator::new([0.0; 6]);
+        it.push(seg(1.0, 4, Blend::Linear));
+        for _ in 0..4 {
+            it.step(1.0);
+        }
+        assert!(it.is_idle());
+        for _ in 0..3 {
+            it.step(1.0);
+        }
+        assert_eq!(it.starved(), 3);
     }
 
     #[test]
