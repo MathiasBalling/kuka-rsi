@@ -318,6 +318,23 @@ mod tests {
     }
 
     #[test]
+    fn groups_ek_and_rejects_out_of_order_ek() {
+        let ek = "<ELEMENT TAG=\"EK.E1\" TYPE=\"DOUBLE\" INDX=\"7\" /><ELEMENT TAG=\"EK.E2\" TYPE=\"DOUBLE\" INDX=\"8\" />\
+                  <ELEMENT TAG=\"EK.E3\" TYPE=\"DOUBLE\" INDX=\"9\" /><ELEMENT TAG=\"EK.E4\" TYPE=\"DOUBLE\" INDX=\"10\" />\
+                  <ELEMENT TAG=\"EK.E5\" TYPE=\"DOUBLE\" INDX=\"11\" /><ELEMENT TAG=\"EK.E6\" TYPE=\"DOUBLE\" INDX=\"12\" />";
+        let s = Schema::compile(&cfg(&format!("{AK}{ek}"), "<ELEMENT TAG=\"DEF_AIPos\" TYPE=\"DOUBLE\" INDX=\"INTERNAL\" />")).unwrap();
+        assert!(matches!(s.sen[0], SenElement::Ak));
+        assert!(matches!(s.sen[1], SenElement::Ek));
+        assert_eq!(s.sen.len(), 2);
+
+        let ek_swapped = "<ELEMENT TAG=\"EK.E2\" TYPE=\"DOUBLE\" INDX=\"7\" /><ELEMENT TAG=\"EK.E1\" TYPE=\"DOUBLE\" INDX=\"8\" />\
+                  <ELEMENT TAG=\"EK.E3\" TYPE=\"DOUBLE\" INDX=\"9\" /><ELEMENT TAG=\"EK.E4\" TYPE=\"DOUBLE\" INDX=\"10\" />\
+                  <ELEMENT TAG=\"EK.E5\" TYPE=\"DOUBLE\" INDX=\"11\" /><ELEMENT TAG=\"EK.E6\" TYPE=\"DOUBLE\" INDX=\"12\" />";
+        let err = Schema::compile(&cfg(&format!("{AK}{ek_swapped}"), "<ELEMENT TAG=\"DEF_AIPos\" TYPE=\"DOUBLE\" INDX=\"INTERNAL\" />")).unwrap_err().to_string();
+        assert!(err.contains("EK"), "{err}");
+    }
+
+    #[test]
     fn rejects_partial_ak_group() {
         let receive = "<ELEMENT TAG=\"AK.A1\" TYPE=\"DOUBLE\" INDX=\"1\" /><ELEMENT TAG=\"AK.A2\" TYPE=\"DOUBLE\" INDX=\"2\" />";
         let xml = format!(
