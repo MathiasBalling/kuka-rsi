@@ -12,7 +12,9 @@ pub enum Command {
     /// Absolute joint targets (rad), each `cycles_per_point` cycles (may be fractional) after the
     /// previous. `batch_remaining` is the number of points in the later chunks of the same
     /// `Driver::stream` call (0 for the last chunk), so the call is accepted or rejected whole.
-    Stream { points: ArrayVec<[f64; 6], MAX_CHUNK>, cycles_per_point: f64, replace: bool, batch_remaining: u32 },
+    /// `first` marks the first chunk of a call: it clears a rejection left by an earlier call
+    /// whose later chunks never arrived.
+    Stream { points: ArrayVec<[f64; 6], MAX_CHUNK>, cycles_per_point: f64, replace: bool, batch_remaining: u32, first: bool },
     /// Quintic profile from the current command to `q` (rad) over `cycles` (may be fractional).
     MoveTo { q: [f64; 6], cycles: f64 },
     /// Drop the queue and stay where the command is now.

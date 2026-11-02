@@ -432,3 +432,37 @@ fn first_telegram_without_axis_positions_does_not_start_a_session() {
     assert_eq!(drv.stats().sessions, 1);
     drv.close().unwrap();
 }
+
+#[test]
+fn fault_is_visible_and_refuses_motion_until_the_next_session() {
+    // No stop channel, and a link timeout long enough to inspect the faulted session after the
+    // simulator stops on `EStr "Error: ..."`.
+    let cfg = DriverConfig::new(EthernetConfig::from_str(SHIPPED).unwrap())
+        .bind("127.0.0.1:0".parse().unwrap())
+        .limits(Limits::kr10_defaults().with_max_velocity_all(2.0).with_max_acceleration_all(None))
+        .link_timeout(Duration::from_secs(1))
+        .rt_priority(false);
+    let drv = Driver::spawn(cfg).unwrap();
+    let sim = ControllerSim::spawn(sim_config(&drv)).unwrap();
+    drv.wait_for_robot(Duration::from_secs(3)).unwrap();
+    assert!(!drv.is_faulted());
+    let q = drv.state().q_command;
+
+    drv.fault("policy diverged").unwrap();
+    assert!(wait_until(Duration::from_secs(1), || drv.is_faulted()), "the fault was never published");
+    assert_eq!(drv.session(), SessionState::Active, "a fault is a state within Active");
+    assert!(matches!(drv.stream(&[q], Duration::from_millis(100), false), Err(Error::Faulted)));
+    assert!(matches!(drv.move_to(q, Duration::from_millis(100)), Err(Error::Faulted)));
+    assert!(matches!(drv.notify("hello"), Err(Error::Faulted)));
+    assert!(matches!(drv.wait_idle(Duration::from_millis(100)), Err(Error::Faulted)));
+    assert_eq!(sim.wait_exit(Duration::from_secs(2)), Some(SimExit::EStrError));
+
+    // Restarting the program is a new session: the fault is gone.
+    assert!(wait_until(Duration::from_secs(3), || drv.session() == SessionState::Lost));
+    let _sim = ControllerSim::spawn(sim_config(&drv)).unwrap();
+    drv.wait_for_robot(Duration::from_secs(3)).unwrap();
+    assert!(!drv.is_faulted());
+    drv.stream(&[drv.state().q_command], Duration::from_millis(100), false).unwrap();
+    drv.wait_idle(Duration::from_secs(2)).unwrap();
+    drv.close().unwrap();
+}

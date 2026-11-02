@@ -38,6 +38,9 @@ struct Shared {
     pending: AtomicU32,
     /// The session's command has reached the last target (`Session::is_settled`).
     settled: AtomicBool,
+    /// The session is faulted (`Session::is_faulted`): motion and messages are refused until
+    /// the next session.
+    faulted: AtomicBool,
     /// Points of `Stream` commands pushed by `Driver::stream` and not yet counted in `queue_len`.
     /// Raised before the push, lowered by the real-time thread after the `publish` that follows
     /// the command's application or rejection, so `stream`'s room check never misses a point.
@@ -158,8 +161,10 @@ impl Rt {
         // The atomics after the buffers: a caller that acts on them reads a state at least as new,
         // e.g. `wait_for_robot` sees `Active` only after the session's first reply was sent and
         // its state published, and `wait_idle` sees an empty queue with the final command.
-        // `settled` before `queue_len`, which `wait_idle` reads first.
+        // `settled` before `queue_len`, which `wait_idle` reads first. `faulted` here too: `settle`
+        // releases the fault command from `pending` only after this store.
         self.shared.settled.store(self.session.is_settled(), Ordering::Release);
+        self.shared.faulted.store(self.session.is_faulted(), Ordering::Release);
         self.shared.queue_len.store(self.stats.queue_len, Ordering::Release);
         self.shared.session.store(session_to_u8(self.state.session), Ordering::Release);
     }
@@ -517,6 +522,7 @@ impl Driver {
             queue_len: AtomicU32::new(0),
             pending: AtomicU32::new(0),
             settled: AtomicBool::new(true),
+            faulted: AtomicBool::new(false),
             in_flight: AtomicUsize::new(0),
             monitor_stop: AtomicBool::new(false),
             start: Instant::now(),
@@ -599,6 +605,13 @@ impl Driver {
         session_from_u8(self.shared.session.load(Ordering::Acquire))
     }
 
+    /// A `fault` has been applied: the command is frozen, and `stream`, `move_to`, `notify` and
+    /// `wait_idle` return `Error::Faulted` until the KRL program is restarted (a new session).
+    /// Becomes true with the first telegram after `fault` (the real-time thread applies it).
+    pub fn is_faulted(&self) -> bool {
+        self.shared.faulted.load(Ordering::Acquire)
+    }
+
     /// Latest published state (wait-free on the real-time side).
     pub fn state(&self) -> RobotState {
         *self.state_out.lock().unwrap().read()
@@ -643,7 +656,8 @@ impl Driver {
     }
 
     /// Block until every queued command has been applied, the target queue is empty and the
-    /// command has reached the last target.
+    /// command has reached the last target. Returns `Error::Faulted` once the session is faulted:
+    /// the frozen command will not reach any target.
     pub fn wait_idle(&self, timeout: Duration) -> Result<()> {
         let t0 = Instant::now();
         loop {
@@ -657,10 +671,14 @@ impl Driver {
             }
             // `pending` first: once it reads zero, `queue_len` and `settled` include every applied
             // command; `settled` after `queue_len` (the reverse of the order `publish` stores them).
-            if self.shared.pending.load(Ordering::Acquire) == 0
+            let idle = self.shared.pending.load(Ordering::Acquire) == 0
                 && self.shared.queue_len.load(Ordering::Acquire) == 0
-                && self.shared.settled.load(Ordering::Acquire)
-            {
+                && self.shared.settled.load(Ordering::Acquire);
+            // After `pending`: a fault applied before `pending` read zero is seen here.
+            if self.is_faulted() {
+                return Err(Error::Faulted);
+            }
+            if idle {
                 return Ok(());
             }
             if t0.elapsed() >= timeout {
@@ -670,7 +688,8 @@ impl Driver {
         }
     }
 
-    fn require_active(&self) -> Result<()> {
+    /// The driver is open and a session is active (faulted or not).
+    fn require_session(&self) -> Result<()> {
         if self.shared.stop.load(Ordering::Relaxed) {
             return Err(Error::Closed);
         }
@@ -679,6 +698,15 @@ impl Driver {
             SessionState::Lost => Err(Error::LinkLost(self.cfg.link_timeout)),
             SessionState::Listening => Err(Error::Protocol("robot not connected".into())),
         }
+    }
+
+    /// A session is active and not faulted: motion and messages are accepted.
+    fn require_active(&self) -> Result<()> {
+        self.require_session()?;
+        if self.is_faulted() {
+            return Err(Error::Faulted);
+        }
+        Ok(())
     }
 
     fn send(&self, cmd: Command) -> Result<()> {
@@ -733,7 +761,7 @@ impl Driver {
             let mut arr: ArrayVec<[f64; 6], MAX_CHUNK> = ArrayVec::new();
             arr.extend(chunk.iter().copied());
             let batch_remaining = (points.len() - sent - chunk.len()) as u32;
-            let cmd = Command::Stream { points: arr, cycles_per_point: cycles, replace: replace && i == 0, batch_remaining };
+            let cmd = Command::Stream { points: arr, cycles_per_point: cycles, replace: replace && i == 0, batch_remaining, first: i == 0 };
             if let Err(e) = self.send(cmd) {
                 // Another caller filled the command queue or the driver closed: the points not
                 // pushed never reach the real-time thread.
@@ -764,9 +792,10 @@ impl Driver {
         self.send(Command::Hold)
     }
 
-    /// Stop the robot through `EStr` and freeze the command.
+    /// Stop the robot through `EStr` and freeze the command until the next session. Allowed on
+    /// a faulted session too (the message is sent again).
     pub fn fault(&self, msg: &str) -> Result<()> {
-        self.require_active()?;
+        self.require_session()?;
         self.send(Command::Fault(short(msg)))
     }
 
@@ -776,12 +805,13 @@ impl Driver {
         self.send(Command::Notify(short(msg)))
     }
 
-    /// Pulse the stop channel so the KRL program leaves `RSI_MOVECORR()`.
+    /// Pulse the stop channel so the KRL program leaves `RSI_MOVECORR()`. Allowed on a faulted
+    /// session too: it is the way out when the robot did not stop on the fault message.
     pub fn stop_program(&self) -> Result<()> {
         if self.cfg.stop_channel.is_none() {
             return Err(Error::Config("no stop channel configured (DriverConfig::stop_channel)".into()));
         }
-        self.require_active()?;
+        self.require_session()?;
         self.send(Command::StopProgram)
     }
 

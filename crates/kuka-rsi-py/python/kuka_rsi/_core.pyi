@@ -9,6 +9,13 @@ class LinkLost(Error): ...
 class ProtocolError(Error): ...
 class LimitError(Error): ...
 
+class Faulted(Error):
+    """A `fault()` froze the command.
+
+    The fault persists until the KRL program restarts (a new session); meanwhile `stream`,
+    `move_to`, `notify` and `wait_idle` raise this. `fault` and `stop_program` stay allowed.
+    """
+
 class Limits:
     @staticmethod
     def kr10_defaults(max_velocity: float | None = None, max_acceleration: float | None = None) -> Limits: ...
@@ -89,24 +96,48 @@ class Driver:
     ) -> None: ...
     def local_addr(self) -> str: ...
     def session(self) -> str: ...
+    def is_faulted(self) -> bool:
+        """True once a `fault()` has been applied (with the next telegram after the call).
+
+        The command stays frozen and `stream`, `move_to`, `notify` and `wait_idle` raise
+        `Faulted` until the KRL program restarts (a new session). A fault is a state within
+        an `"Active"` session, so `session()` does not show it.
+        """
     def wait_for_robot(self, timeout: float = 60.0) -> None: ...
-    def wait_idle(self, timeout: float = 10.0) -> None: ...
+    def wait_idle(self, timeout: float = 10.0) -> None:
+        """Wait until the queue has drained and the command has settled.
+
+        Raises `TimeoutError` if that takes longer than `timeout`, and `Faulted` once a
+        `fault()` has frozen the command.
+        """
     def state(self) -> RobotState: ...
     def stats(self) -> Stats: ...
     def events(self) -> list[str]: ...
     def drain_log(self) -> list[RobotState]: ...
-    def stream(self, points: ArrayLike, dt: float, replace: bool = False) -> None: ...
+    def stream(self, points: ArrayLike, dt: float, replace: bool = False) -> None:
+        """Queue absolute joint targets (rad), `dt` seconds apart.
+
+        Raises `Faulted` after a `fault()`, until the KRL program restarts.
+        """
     def move_to(self, q: ArrayLike, duration: float, block: bool = False) -> None:
         """Smooth (quintic) move to `q` over `duration` seconds.
 
         With `block=True`, waits on `wait_idle` with a `duration + 5.0` second timeout
         (not just `duration`): `wait_idle` also waits for the motion limiter to settle,
         and raises `TimeoutError` if a clamp keeps the command short of the target or the
-        program is paused for longer than that timeout.
+        program is paused for longer than that timeout. Raises `Faulted` after a `fault()`,
+        until the KRL program restarts.
         """
     def hold(self) -> None: ...
-    def fault(self, msg: str) -> None: ...
-    def notify(self, msg: str) -> None: ...
+    def fault(self, msg: str) -> None:
+        """Stop the robot through `EStr` (`Error: msg`) and freeze the command.
+
+        The fault persists until the KRL program restarts (a new session); meanwhile
+        `stream`, `move_to`, `notify` and `wait_idle` raise `Faulted` and `is_faulted()` is
+        true.
+        """
+    def notify(self, msg: str) -> None:
+        """Show `msg` on the smartHMI. Raises `Faulted` after a `fault()`."""
     def stop_program(self) -> None: ...
     def set_speed_scale(self, s: float) -> None: ...
     def set_limits(self, limits: Limits) -> None: ...

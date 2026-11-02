@@ -61,6 +61,14 @@ raise `TimeoutError` if the robot cannot settle in time (a paused program, a lim
 holding the command short). `Limits.kr10_defaults()` keeps an acceleration limit of
 300°/s² with braking look-ahead; `max_acceleration=None` disables it.
 
+## Behavior notes
+
+- `fault(msg)` sends `Error: msg` to the robot and freezes the command. The fault
+  persists until the KRL program restarts (a new session): meanwhile `is_faulted()` is
+  true and `stream`, `move_to`, `notify` and `wait_idle` raise `Faulted` (Rust:
+  `Error::Faulted`). `fault` and `stop_program` stay allowed. A fault is a state within
+  the `Active` session, so `session()` does not show it.
+
 ## Wire format (from the shipped config)
 
 Robot to PC every 4 ms:

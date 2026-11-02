@@ -36,7 +36,8 @@ pub struct Session {
     prev_counts: ClampCounts,
     events: ArrayVec<Event, 16>,
     /// Points still to come from a `stream` call one of whose chunks was rejected; they are
-    /// rejected too, so a call is played whole or not at all.
+    /// rejected too, so a call is played whole or not at all. Cleared by the first chunk of the
+    /// next call, in case the rest of the rejected call never arrives.
     reject_remaining: u32,
 }
 
@@ -86,6 +87,12 @@ impl Session {
 
     pub fn is_idle(&self) -> bool {
         self.interp.is_idle()
+    }
+
+    /// A `Fault` froze the command. It stays frozen, and motion and messages are rejected, until
+    /// the next session (`start`).
+    pub fn is_faulted(&self) -> bool {
+        self.frozen.is_some()
     }
 
     /// The target queue is empty and the command has reached the last target (the limiter is not
@@ -151,7 +158,12 @@ impl Session {
 
     pub fn apply(&mut self, cmd: Command) -> Result<()> {
         match cmd {
-            Command::Stream { points, cycles_per_point, replace, batch_remaining } => {
+            Command::Stream { points, cycles_per_point, replace, batch_remaining, first } => {
+                // A new call starts clean: the rest of an earlier rejected call may never arrive
+                // (the driver stops pushing when the command queue fills or it closes).
+                if first {
+                    self.reject_remaining = 0;
+                }
                 // Once a chunk of a `stream` call is rejected, the rest of the call is rejected
                 // too: playing the later chunks would draw a straight line across the gap.
                 if self.reject_remaining > 0 {
@@ -359,7 +371,7 @@ mod tests {
     fn stream(q: [f64; 6], cycles: f64, replace: bool) -> Command {
         let mut points = ArrayVec::new();
         points.push(q);
-        Command::Stream { points, cycles_per_point: cycles, replace, batch_remaining: 0 }
+        Command::Stream { points, cycles_per_point: cycles, replace, batch_remaining: 0, first: true }
     }
 
     fn run(s: &mut Session, t: &RobotTelegram, n: usize) -> SensorTelegram {
@@ -493,7 +505,7 @@ mod tests {
             points.push(q);
         }
         for _ in 0..(MAX_QUEUE / MAX_CHUNK) {
-            s.apply(Command::Stream { points: points.clone(), cycles_per_point: 1.0, replace: false, batch_remaining: 0 }).unwrap();
+            s.apply(Command::Stream { points: points.clone(), cycles_per_point: 1.0, replace: false, batch_remaining: 0, first: true }).unwrap();
         }
         assert!(matches!(s.apply(stream(q, 1.0, false)), Err(Error::QueueFull)));
     }
@@ -629,24 +641,35 @@ mod tests {
             full.push(q);
         }
         for _ in 0..15 {
-            s.apply(Command::Stream { points: full.clone(), cycles_per_point: 1.0, replace: false, batch_remaining: 0 }).unwrap();
+            s.apply(Command::Stream { points: full.clone(), cycles_per_point: 1.0, replace: false, batch_remaining: 0, first: true }).unwrap();
         }
         let mut partial = ArrayVec::new();
         for _ in 0..40 {
             partial.push(q);
         }
-        s.apply(Command::Stream { points: partial, cycles_per_point: 1.0, replace: false, batch_remaining: 0 }).unwrap();
+        s.apply(Command::Stream { points: partial, cycles_per_point: 1.0, replace: false, batch_remaining: 0, first: true }).unwrap();
         assert_eq!(s.queue_len(), 1000);
-        assert!(matches!(s.apply(Command::Stream { points: full.clone(), cycles_per_point: 1.0, replace: false, batch_remaining: 0 }), Err(Error::QueueFull)));
+        assert!(matches!(s.apply(Command::Stream { points: full.clone(), cycles_per_point: 1.0, replace: false, batch_remaining: 0, first: true }), Err(Error::QueueFull)));
         assert_eq!(s.queue_len(), 1000);
     }
 
+    /// The first chunk of a `stream` call.
     fn chunk(q: [f64; 6], n: usize, batch_remaining: u32) -> Command {
         let mut points = ArrayVec::new();
         for _ in 0..n {
             points.push(q);
         }
-        Command::Stream { points, cycles_per_point: 1.0, replace: false, batch_remaining }
+        Command::Stream { points, cycles_per_point: 1.0, replace: false, batch_remaining, first: true }
+    }
+
+    /// A later chunk of the same `stream` call.
+    fn rest(q: [f64; 6], n: usize, batch_remaining: u32) -> Command {
+        match chunk(q, n, batch_remaining) {
+            Command::Stream { points, cycles_per_point, replace, batch_remaining, .. } => {
+                Command::Stream { points, cycles_per_point, replace, batch_remaining, first: false }
+            }
+            _ => unreachable!(),
+        }
     }
 
     fn filled_to(n: usize) -> Session {
@@ -665,7 +688,7 @@ mod tests {
         let mut s = filled_to(1000);
         let q = s.q_start();
         assert!(matches!(s.apply(chunk(q, 40, 30)), Err(Error::QueueFull)), "40 + 30 more do not fit");
-        assert!(matches!(s.apply(chunk(q, 30, 0)), Err(Error::QueueFull)), "the rest of the batch is rejected");
+        assert!(matches!(s.apply(rest(q, 30, 0)), Err(Error::QueueFull)), "the rest of the batch is rejected");
         assert_eq!(s.queue_len(), 1000);
         s.apply(chunk(q, 20, 0)).unwrap();
         assert_eq!(s.queue_len(), 1020, "the next batch is accepted");
@@ -673,7 +696,7 @@ mod tests {
         // The tail would fit on its own here (990 + 30), and is still rejected with its batch.
         let mut s = filled_to(990);
         assert!(matches!(s.apply(chunk(q, 40, 30)), Err(Error::QueueFull)));
-        assert!(matches!(s.apply(chunk(q, 30, 0)), Err(Error::QueueFull)));
+        assert!(matches!(s.apply(rest(q, 30, 0)), Err(Error::QueueFull)));
         assert_eq!(s.queue_len(), 990);
         s.apply(chunk(q, 20, 0)).unwrap();
         assert_eq!(s.queue_len(), 1010);
@@ -686,8 +709,34 @@ mod tests {
         assert!(matches!(s.apply(chunk(q, 40, 30)), Err(Error::QueueFull)));
         s.lost();
         s.start(&tele(START_DEG, START_DEG, 2000));
-        s.apply(chunk(q, 30, 0)).unwrap();
+        // A later chunk, so only the session reset (not the `first` flag) can clear the rejection.
+        s.apply(rest(q, 30, 0)).unwrap();
         assert_eq!(s.queue_len(), 30, "a new session starts without a pending batch rejection");
+    }
+
+    #[test]
+    fn stale_batch_rejection_does_not_reject_the_next_call() {
+        let mut s = filled_to(1000);
+        let q = s.q_start();
+        // The first chunk of a call is rejected with 30 points to follow; the call then fails in
+        // the driver before pushing them (another caller filled the command queue), so the rest
+        // never arrives to use up the rejection.
+        assert!(matches!(s.apply(chunk(q, 40, 30)), Err(Error::QueueFull)));
+        s.apply(chunk(q, 20, 0)).unwrap();
+        assert_eq!(s.queue_len(), 1020, "the next call's first chunk starts clean");
+    }
+
+    #[test]
+    fn is_faulted_until_the_next_session() {
+        let (mut s, t) = started();
+        assert!(!s.is_faulted());
+        s.apply(Command::Fault(ArrayString::from("x").unwrap())).unwrap();
+        assert!(s.is_faulted());
+        run(&mut s, &t, 30);
+        assert!(s.is_faulted(), "the fault outlives its message");
+        s.lost();
+        s.start(&tele(START_DEG, START_DEG, 2000));
+        assert!(!s.is_faulted());
     }
 
     #[test]

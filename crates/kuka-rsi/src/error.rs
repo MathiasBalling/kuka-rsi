@@ -20,7 +20,7 @@ pub enum Error {
     Limit(String),
     #[error("command queue is full")]
     QueueFull,
-    #[error("driver faulted: targets are ignored until the next session")]
+    #[error("driver faulted: motion and messages are refused until the KRL program restarts (a new session)")]
     Faulted,
     #[error("driver is closed")]
     Closed,

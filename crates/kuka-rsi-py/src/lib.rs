@@ -19,6 +19,12 @@ create_exception!(kuka_rsi, Error, PyException, "Base class for kuka_rsi errors.
 create_exception!(kuka_rsi, LinkLost, Error, "No telegram from the robot for longer than link_timeout.");
 create_exception!(kuka_rsi, ProtocolError, Error, "The robot is not connected or sent something unexpected.");
 create_exception!(kuka_rsi, LimitError, Error, "A target or parameter is outside its limits.");
+create_exception!(
+    kuka_rsi,
+    Faulted,
+    Error,
+    "A fault() froze the command: stream, move_to, notify and wait_idle are refused until the KRL program restarts (a new session)."
+);
 
 pub(crate) fn to_py(e: kuka_rsi::Error) -> PyErr {
     use kuka_rsi::Error as E;
@@ -28,8 +34,7 @@ pub(crate) fn to_py(e: kuka_rsi::Error) -> PyErr {
         E::Protocol(_) => ProtocolError::new_err(e.to_string()),
         E::Limit(_) | E::QueueFull => LimitError::new_err(e.to_string()),
         E::Io(_) => PyOSError::new_err(e.to_string()),
-        // A faulted driver is reported as a limit error: no dedicated exception exists for it.
-        E::Faulted => LimitError::new_err(e.to_string()),
+        E::Faulted => Faulted::new_err(e.to_string()),
         E::Config(_) | E::Closed => Error::new_err(e.to_string()),
     }
 }
@@ -491,6 +496,10 @@ impl PyDriver {
         session_name(self.inner.session())
     }
 
+    fn is_faulted(&self) -> bool {
+        self.inner.is_faulted()
+    }
+
     #[pyo3(signature = (timeout=60.0))]
     fn wait_for_robot(&self, py: Python<'_>, timeout: f64) -> PyResult<()> {
         py.detach(|| self.inner.wait_for_robot(Duration::from_secs_f64(timeout))).map_err(to_py)
@@ -600,5 +609,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("LinkLost", m.py().get_type::<LinkLost>())?;
     m.add("ProtocolError", m.py().get_type::<ProtocolError>())?;
     m.add("LimitError", m.py().get_type::<LimitError>())?;
+    m.add("Faulted", m.py().get_type::<Faulted>())?;
     Ok(())
 }

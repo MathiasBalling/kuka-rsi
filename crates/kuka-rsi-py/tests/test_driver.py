@@ -124,3 +124,30 @@ def test_array_like_inputs_are_accepted():
     with pytest.raises(ValueError):
         drv.stream([[0.0] * 5], dt=0.1)
     drv.close()
+
+
+def test_fault_is_visible_and_refuses_motion():
+    # No stop channel, and a link timeout long enough to inspect the faulted session after the
+    # simulator stops on the fault message.
+    drv = kuka_rsi.Driver(str(CONFIG), bind="127.0.0.1:0", link_timeout=3.0, rt_priority=False)
+    _sim = kuka_rsi.ControllerSim(str(CONFIG), target=drv.local_addr(), bind="127.0.0.1:0")
+    drv.wait_for_robot(3.0)
+    assert not drv.is_faulted()
+    q = drv.state().q_command
+    drv.fault("policy diverged")
+    t0 = time.monotonic()
+    while not drv.is_faulted() and time.monotonic() - t0 < 1.0:
+        time.sleep(0.005)
+    assert drv.is_faulted()
+    assert drv.session() == "Active"
+    with pytest.raises(kuka_rsi.Faulted):
+        drv.stream(q, dt=0.1)
+    with pytest.raises(kuka_rsi.Faulted):
+        drv.move_to(q, duration=0.2, block=True)
+    with pytest.raises(kuka_rsi.Faulted):
+        drv.notify("hello")
+    with pytest.raises(kuka_rsi.Faulted):
+        drv.wait_idle(0.1)
+    assert issubclass(kuka_rsi.Faulted, kuka_rsi.Error)
+    assert not issubclass(kuka_rsi.Faulted, kuka_rsi.LimitError)
+    drv.close()
