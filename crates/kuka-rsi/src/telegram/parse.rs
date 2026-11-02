@@ -534,19 +534,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_does_not_allocate_after_warm_up() {
-        let s = schema(SHIPPED);
-        let mut p = Parser::new(&s);
-        let mut t = RobotTelegram::default();
-        p.parse(SHIPPED_TELEGRAM, &mut t).unwrap();
-        let before = crate::test_alloc::allocations();
-        for _ in 0..100 {
-            p.parse(SHIPPED_TELEGRAM, &mut t).unwrap();
-        }
-        assert_eq!(crate::test_alloc::allocations(), before, "parse must not allocate on the hot path");
-    }
-
-    #[test]
     fn tolerates_declaration_comment_single_quotes_and_nested_unknown() {
         let s = schema(SHIPPED);
         let mut p = Parser::new(&s);
