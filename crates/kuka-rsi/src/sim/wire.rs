@@ -77,7 +77,12 @@ fn num(s: &str) -> Result<f64, ParseError> {
     if s.is_empty() {
         return Ok(0.0);
     }
-    s.parse::<f64>().map_err(|_| ParseError::Number(s.to_string()))
+    // Mirrors the driver's `parse_f64`: `f64::from_str` also accepts NaN, inf and infinity,
+    // and overflows to inf ("1e999"); none of those may reach the telegram.
+    match s.parse::<f64>() {
+        Ok(v) if v.is_finite() => Ok(v),
+        _ => Err(ParseError::Number(s.to_string())),
+    }
 }
 
 enum Target {
@@ -93,15 +98,20 @@ fn on_element(schema: &Schema, e: &BytesStart<'_>, depth: usize, out: &mut Senso
         if name != "Sen" {
             return Err(ParseError::Root(name.to_string()));
         }
+        let mut saw_type = false;
         for a in e.attributes() {
             let a = a.map_err(|err| ParseError::Xml(err.to_string()))?;
             let key: &str = a.key.as_ref();
             if key == "Type" {
+                saw_type = true;
                 let got: &str = a.value.as_ref();
                 if got != schema.sentype {
                     return Err(ParseError::Sentype { got: got.to_string(), want: schema.sentype.clone() });
                 }
             }
+        }
+        if !saw_type {
+            return Err(ParseError::Sentype { got: String::new(), want: schema.sentype.clone() });
         }
         return Ok(());
     }
@@ -210,17 +220,26 @@ pub fn parse_sen(schema: &Schema, bytes: &[u8], out: &mut SensorTelegram) -> Res
             }
             Event::GeneralRef(r) => {
                 if depth == 2 {
-                    if let Some(Target::EStr) = target {
-                        let resolved = match r.resolve_char_ref().map_err(|e| ParseError::Xml(e.to_string()))? {
-                            Some(ch) => ch.to_string(),
-                            None => {
-                                let name: &str = r.as_ref();
-                                quick_xml::escape::resolve_predefined_entity(name)
-                                    .ok_or_else(|| ParseError::Xml(format!("unknown entity &{name};")))?
-                                    .to_string()
-                            }
-                        };
-                        push_truncated(&mut out.estr, &resolved);
+                    match target {
+                        Some(Target::EStr) => {
+                            let resolved = match r.resolve_char_ref().map_err(|e| ParseError::Xml(e.to_string()))? {
+                                Some(ch) => ch.to_string(),
+                                None => {
+                                    let name: &str = r.as_ref();
+                                    quick_xml::escape::resolve_predefined_entity(name)
+                                        .ok_or_else(|| ParseError::Xml(format!("unknown entity &{name};")))?
+                                        .to_string()
+                                }
+                            };
+                            push_truncated(&mut out.estr, &resolved);
+                        }
+                        // Numeric fields (IPOC, user slots) never legitimately contain an
+                        // entity reference; treat one as malformed rather than let the
+                        // surrounding text fragments silently overwrite each other.
+                        Some(Target::Ipoc) | Some(Target::Slot(_)) => {
+                            return Err(ParseError::Xml("entity reference inside a numeric field".into()));
+                        }
+                        None => {}
                     }
                 }
             }
@@ -306,5 +325,23 @@ mod tests {
         assert!(matches!(parse_sen(&s, b"<Sen Type=\"Other\"><IPOC>1</IPOC></Sen>", &mut back), Err(ParseError::Sentype { .. })));
         assert!(matches!(parse_sen(&s, b"<Sen Type=\"KukaRsi\"><EStr/></Sen>", &mut back), Err(ParseError::MissingIpoc)));
         assert!(matches!(parse_sen(&s, b"<Rob TYPE=\"KukaRsi\"><IPOC>1</IPOC></Rob>", &mut back), Err(ParseError::Root(_))));
+        assert!(matches!(parse_sen(&s, b"<Sen><IPOC>1</IPOC></Sen>", &mut back), Err(ParseError::Sentype { .. })));
+    }
+
+    #[test]
+    fn sen_parser_rejects_entities_in_numeric_fields() {
+        let s = schema();
+        let mut back = SensorTelegram::default();
+        assert!(matches!(parse_sen(&s, b"<Sen Type=\"KukaRsi\"><IPOC>1&#48;2</IPOC></Sen>", &mut back), Err(ParseError::Xml(_))));
+        assert!(matches!(
+            parse_sen(&s, b"<Sen Type=\"KukaRsi\"><MoveStop>&amp;1</MoveStop><IPOC>1</IPOC></Sen>", &mut back),
+            Err(ParseError::Xml(_))
+        ));
+        assert!(matches!(
+            parse_sen(&s, b"<Sen Type=\"KukaRsi\"><AK A1=\"NaN\" A2=\"0\" A3=\"0\" A4=\"0\" A5=\"0\" A6=\"0\" /><IPOC>1</IPOC></Sen>", &mut back),
+            Err(ParseError::Number(_))
+        ));
+        parse_sen(&s, b"<Sen Type=\"KukaRsi\"><EStr>a&amp;b</EStr><IPOC>1</IPOC></Sen>", &mut back).unwrap();
+        assert_eq!(back.estr.as_str(), "a&b");
     }
 }
