@@ -55,18 +55,15 @@ pub enum ParseError {
     Number(String),
 }
 
-/// Token of the RSI telegram subset of XML: one root, one level of children, attributes
-/// in double or single quotes, text content, self-closing tags. `<?...?>` declarations and
-/// `<!-- -->` comments are skipped. Entity references are not decoded (the robot sends numbers).
+/// Token of the RSI telegram subset of XML: one root, one level of children (unknown
+/// children may nest a little), attributes in double or single quotes, text content,
+/// self-closing tags. `<?...?>` declarations and `<!-- -->` comments are skipped. Entity
+/// references are not decoded (the robot sends numbers).
 enum Token<'a> {
     /// `<name attrs>` or `<name attrs/>`; `attrs` is the raw text between the name and `>`/`/>`.
     Start { name: &'a str, attrs: &'a str, empty: bool },
-    /// The parser only tracks nesting depth, not element identity, so `name` is not
-    /// read back; it is still captured so a future strict end-tag check can use it.
-    End {
-        #[allow(dead_code)]
-        name: &'a str,
-    },
+    /// `</name>`; the parser matches `name` against the element it closes.
+    End { name: &'a str },
     Text(&'a str),
     Eof,
 }
@@ -117,8 +114,10 @@ impl<'a> Tokenizer<'a> {
         std::str::from_utf8(&self.src[start..self.pos]).map_err(|_| ParseError::Xml("name is not UTF-8".into()))
     }
 
-    fn find(&self, needle: &[u8]) -> Option<usize> {
-        self.src[self.pos..].windows(needle.len()).position(|w| w == needle)
+    /// Offset from `pos` of the first `needle` starting at or after `pos + skip`.
+    fn find(&self, skip: usize, needle: &[u8]) -> Option<usize> {
+        let hay = self.src.get(self.pos + skip..)?;
+        hay.windows(needle.len()).position(|w| w == needle).map(|i| i + skip)
     }
 
     fn next(&mut self) -> Result<Token<'a>, ParseError> {
@@ -136,12 +135,14 @@ impl<'a> Tokenizer<'a> {
             }
             let rest = &self.src[self.pos..];
             if rest.starts_with(b"<?") {
-                let end = self.find(b"?>").ok_or_else(|| ParseError::Xml("unterminated declaration".into()))?;
+                // The closer may not reuse the opener's '?': `<?>` is not a declaration.
+                let end = self.find(2, b"?>").ok_or_else(|| ParseError::Xml("unterminated declaration".into()))?;
                 self.pos += end + 2;
                 continue;
             }
             if rest.starts_with(b"<!--") {
-                let end = self.find(b"-->").ok_or_else(|| ParseError::Xml("unterminated comment".into()))?;
+                // Likewise `<!-->` is not a comment.
+                let end = self.find(4, b"-->").ok_or_else(|| ParseError::Xml("unterminated comment".into()))?;
                 self.pos += end + 3;
                 continue;
             }
@@ -239,6 +240,10 @@ impl<'a> Iterator for Attrs<'a> {
     }
 }
 
+/// Most elements open at once, root included. A telegram needs two (`Rob` and one of its
+/// children); the rest is headroom for unknown elements, deeper nesting is rejected.
+const MAX_DEPTH: usize = 8;
+
 /// Reusable parser bound to one schema.
 pub struct Parser {
     schema: Schema,
@@ -252,7 +257,12 @@ fn parse_f64(s: &str, what: &str) -> Result<f64, ParseError> {
     if s.is_empty() {
         return Ok(0.0);
     }
-    s.parse::<f64>().map_err(|_| ParseError::Number(format!("{what}={s:?}")))
+    // `f64::from_str` also accepts NaN, inf and infinity, and overflows to inf ("1e999");
+    // none of those may reach joint state.
+    match s.parse::<f64>() {
+        Ok(v) if v.is_finite() => Ok(v),
+        _ => Err(ParseError::Number(format!("{what}={s:?}"))),
+    }
 }
 
 impl Parser {
@@ -333,42 +343,72 @@ impl Parser {
     pub fn parse(&mut self, bytes: &[u8], out: &mut RobotTelegram) -> Result<(), ParseError> {
         let mut tok = Tokenizer::new(bytes);
         self.seen.iter_mut().for_each(|s| *s = false);
+        // Names of the open elements, borrowed from `bytes`: `open[0]` is the root, `open[1]`
+        // the current telegram element, deeper ones are nested unknown elements. `depth` is
+        // how many are open.
+        let mut open: [&str; MAX_DEPTH] = [""; MAX_DEPTH];
         let mut depth = 0usize;
+        let mut root_seen = false;
         let mut got_ipoc = false;
         let mut text_target: Option<TextTarget> = None;
         loop {
             match tok.next()? {
                 Token::Eof => break,
                 Token::Start { name, attrs, empty } => {
-                    if depth == 0 {
-                        self.check_root(name, attrs)?;
-                        if empty {
-                            break; // root self-closed: no children, no IPOC
+                    match depth {
+                        0 => {
+                            if root_seen {
+                                return Err(ParseError::Xml(format!("element <{name}> after the root element")));
+                            }
+                            self.check_root(name, attrs)?;
+                            root_seen = true;
+                            if empty {
+                                break; // root self-closed: no children, no IPOC
+                            }
                         }
-                        depth = 1;
-                    } else {
-                        if depth == 1 {
+                        1 => {
+                            // Each telegram element starts without a text target, and a
+                            // self-closed one never gets one: it has no text and no end tag
+                            // to clear it, so a later sibling's text would land in it.
+                            text_target = None;
                             if name == "IPOC" {
-                                text_target = Some(TextTarget::Ipoc);
+                                if !empty {
+                                    text_target = Some(TextTarget::Ipoc);
+                                }
                             } else if let Some(idx) = self.element_index(name) {
                                 self.seen[idx] = true;
                                 match &self.schema.rob[idx] {
-                                    RobElement::Text { slot, .. } => text_target = Some(TextTarget::Slot(*slot)),
+                                    RobElement::Text { slot, .. } => {
+                                        if !empty {
+                                            text_target = Some(TextTarget::Slot(*slot));
+                                        }
+                                    }
                                     _ => self.read_attrs(idx, attrs, out)?,
                                 }
                             } else {
                                 self.unknown += 1;
                             }
                         }
-                        // Depth >= 2 is nested deeper than the telegram grammar: not
-                        // dispatched, just tracked so its End is consumed correctly.
-                        if !empty {
-                            depth += 1;
+                        // Nested deeper than the telegram grammar: not dispatched, only
+                        // tracked so its end tag is matched.
+                        _ => {}
+                    }
+                    if !empty {
+                        if depth == MAX_DEPTH {
+                            return Err(ParseError::Xml(format!("elements nested deeper than {MAX_DEPTH} levels")));
                         }
+                        open[depth] = name;
+                        depth += 1;
                     }
                 }
-                Token::End { name: _ } => {
-                    depth = depth.saturating_sub(1);
+                Token::End { name } => {
+                    let Some(d) = depth.checked_sub(1) else {
+                        return Err(ParseError::Xml(format!("end tag </{name}> outside the root element")));
+                    };
+                    if open[d] != name {
+                        return Err(ParseError::Xml(format!("end tag </{name}> does not match <{}>", open[d])));
+                    }
+                    depth = d;
                     text_target = None;
                 }
                 Token::Text(s) => {
@@ -558,6 +598,99 @@ mod tests {
         ] {
             assert!(matches!(p.parse(bad, &mut t), Err(ParseError::Xml(_))), "{:?}", std::str::from_utf8(bad));
         }
+    }
+
+    /// Schema whose first channel (slot 0) is the text element `DiL`.
+    fn dil_schema() -> Schema {
+        schema(
+            "<ROOT><CONFIG><IP_NUMBER>127.0.0.1</IP_NUMBER><PORT>49152</PORT><SENTYPE>T</SENTYPE><ONLYSEND>TRUE</ONLYSEND></CONFIG>\
+             <SEND><ELEMENTS><ELEMENT TAG=\"DiL\" TYPE=\"LONG\" INDX=\"1\" /></ELEMENTS></SEND><RECEIVE><ELEMENTS></ELEMENTS></RECEIVE></ROOT>",
+        )
+    }
+
+    #[test]
+    fn self_closing_text_element_does_not_capture_a_later_siblings_text() {
+        let s = schema(SHIPPED);
+        let mut p = Parser::new(&s);
+        let mut t = RobotTelegram::default();
+        // A self-closed IPOC has no text; the text of a later unknown or keyword sibling is not IPOC.
+        assert_eq!(p.parse(b"<Rob TYPE=\"KukaRsi\"><IPOC/><Extra>5</Extra></Rob>", &mut t), Err(ParseError::MissingIpoc));
+        assert_eq!(p.parse(b"<Rob TYPE=\"KukaRsi\"><IPOC/><Delay D=\"3\">5</Delay></Rob>", &mut t), Err(ParseError::MissingIpoc));
+        assert_eq!(t.ipoc, 0);
+
+        let mut p = Parser::new(&dil_schema());
+        let mut t = RobotTelegram::default();
+        p.parse(b"<Rob TYPE=\"T\"><DiL/><Other>42</Other><IPOC>1</IPOC></Rob>", &mut t).unwrap();
+        assert_eq!(t.slots[0], 0.0, "Other's text must not land in the DiL slot");
+        assert_eq!(t.ipoc, 1);
+        assert_eq!(p.unknown(), 1);
+    }
+
+    #[test]
+    fn rejects_mismatched_and_stray_end_tags() {
+        let s = schema(SHIPPED);
+        let mut p = Parser::new(&s);
+        let mut t = RobotTelegram::default();
+        for bad in [
+            &b"<Rob TYPE=\"KukaRsi\"><IPOC>1</IPOC></Rob></Rob>"[..],
+            b"<Rob TYPE=\"KukaRsi\"><IPOC>1</Foo></Bar>",
+            b"<Rob TYPE=\"KukaRsi\"><Extra></Z><AIPos A1=\"9\" A2=\"0\" A3=\"0\" A4=\"0\" A5=\"0\" A6=\"0\"/><IPOC>1</IPOC></Rob>",
+            b"</Rob>",
+            b"<Rob TYPE=\"KukaRsi\"><Extra><A><B></A></B></Extra><IPOC>1</IPOC></Rob>",
+            b"<Rob TYPE=\"KukaRsi\"><IPOC>1</IPOC></Rob><Rob TYPE=\"KukaRsi\"><IPOC>2</IPOC></Rob>",
+        ] {
+            assert!(matches!(p.parse(bad, &mut t), Err(ParseError::Xml(_))), "{:?}", std::str::from_utf8(bad));
+        }
+        assert_eq!(t.aipos[0], 0.0, "AIPos inside the unclosed Extra must not be applied");
+    }
+
+    #[test]
+    fn nesting_is_limited_to_eight_open_elements() {
+        let s = schema(SHIPPED);
+        let mut p = Parser::new(&s);
+        let mut t = RobotTelegram::default();
+        // Rob plus `levels` nested unknown elements, all properly closed.
+        let nested = |levels: usize| {
+            let mut xml = String::from("<Rob TYPE=\"KukaRsi\">");
+            for i in 0..levels {
+                xml.push_str(&format!("<E{i}>"));
+            }
+            for i in (0..levels).rev() {
+                xml.push_str(&format!("</E{i}>"));
+            }
+            xml.push_str("<IPOC>1</IPOC></Rob>");
+            xml
+        };
+        p.parse(nested(7).as_bytes(), &mut t).unwrap();
+        assert_eq!(t.ipoc, 1);
+        assert!(matches!(p.parse(nested(8).as_bytes(), &mut t), Err(ParseError::Xml(_))));
+    }
+
+    #[test]
+    fn declaration_and_comment_closers_do_not_overlap_their_openers() {
+        let s = schema(SHIPPED);
+        let mut p = Parser::new(&s);
+        let mut t = RobotTelegram::default();
+        for bad in [&b"<?><Rob TYPE=\"KukaRsi\"><IPOC>1</IPOC></Rob>"[..], b"<!--><Rob TYPE=\"KukaRsi\"><IPOC>1</IPOC></Rob>"] {
+            assert!(matches!(p.parse(bad, &mut t), Err(ParseError::Xml(_))), "{:?}", std::str::from_utf8(bad));
+        }
+        p.parse(b"<?xml version=\"1.0\"?><Rob TYPE=\"KukaRsi\"><IPOC>1</IPOC></Rob>", &mut t).unwrap();
+        assert_eq!(t.ipoc, 1);
+    }
+
+    #[test]
+    fn rejects_non_finite_numbers() {
+        let s = schema(SHIPPED);
+        let mut p = Parser::new(&s);
+        let mut t = RobotTelegram::default();
+        for v in ["NaN", "inf", "-inf", "infinity", "1e999"] {
+            let xml = format!("<Rob TYPE=\"KukaRsi\"><AIPos A1=\"{v}\" A2=\"0\" A3=\"0\" A4=\"0\" A5=\"0\" A6=\"0\" /><IPOC>1</IPOC></Rob>");
+            assert!(matches!(p.parse(xml.as_bytes(), &mut t), Err(ParseError::Number(_))), "A1={v}");
+            assert!(t.aipos[0].is_finite(), "A1={v} reached joint state");
+        }
+        let mut p = Parser::new(&dil_schema());
+        assert!(matches!(p.parse(b"<Rob TYPE=\"T\"><DiL>NaN</DiL><IPOC>1</IPOC></Rob>", &mut t), Err(ParseError::Number(_))));
+        assert!(t.slots[0].is_finite());
     }
 
     proptest::proptest! {
