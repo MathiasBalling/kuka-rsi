@@ -408,6 +408,15 @@ stats_getters!(
     log_drops: u64, queue_len: u32, robot_delay: u32,
 );
 
+/// Coerces any array-like (a plain list, a non-float64 array, ...) to a float64 numpy array
+/// before extraction, so `stream`/`move_to` accept `ArrayLike` as their stubs promise instead of
+/// raising a confusing `TypeError` on anything that isn't already a float64 `ndarray`.
+fn as_f64_array<'py>(py: Python<'py>, obj: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+    let np = py.import("numpy")?;
+    let float64 = np.getattr("float64")?;
+    np.call_method1("asarray", (obj, float64))
+}
+
 fn points_from(points: PyReadonlyArrayDyn<'_, f64>) -> PyResult<Vec<[f64; 6]>> {
     let a = points.as_array();
     match a.ndim() {
@@ -515,8 +524,10 @@ impl PyDriver {
     }
 
     #[pyo3(signature = (points, dt, replace=false))]
-    fn stream(&self, points: PyReadonlyArrayDyn<'_, f64>, dt: f64, replace: bool) -> PyResult<()> {
-        let pts = points_from(points)?;
+    fn stream(&self, py: Python<'_>, points: &Bound<'_, PyAny>, dt: f64, replace: bool) -> PyResult<()> {
+        let arr = as_f64_array(py, points)?;
+        let arr: PyReadonlyArrayDyn<'_, f64> = arr.extract()?;
+        let pts = points_from(arr)?;
         self.inner.stream(&pts, Duration::from_secs_f64(dt.max(0.0)), replace).map_err(to_py)
     }
 
@@ -524,8 +535,10 @@ impl PyDriver {
     /// legitimate clamp-limited move that runs longer than `duration` still completes instead
     /// of raising `TimeoutError` early.
     #[pyo3(signature = (q, duration, block=false))]
-    fn move_to(&self, py: Python<'_>, q: PyReadonlyArray1<'_, f64>, duration: f64, block: bool) -> PyResult<()> {
-        let q = arr6(q, "q")?;
+    fn move_to(&self, py: Python<'_>, q: &Bound<'_, PyAny>, duration: f64, block: bool) -> PyResult<()> {
+        let arr = as_f64_array(py, q)?;
+        let arr: PyReadonlyArray1<'_, f64> = arr.extract()?;
+        let q = arr6(arr, "q")?;
         self.inner.move_to(q, Duration::from_secs_f64(duration.max(0.0))).map_err(to_py)?;
         if block {
             py.detach(|| self.inner.wait_idle(Duration::from_secs_f64(duration + 5.0))).map_err(to_py)?;

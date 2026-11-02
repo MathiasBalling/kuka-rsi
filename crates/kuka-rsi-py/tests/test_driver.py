@@ -113,3 +113,14 @@ def test_fault_stops_the_sim_and_link_is_lost_after_sim_stops():
     with pytest.raises(kuka_rsi.LinkLost):
         drv.stream(np.zeros(6), dt=0.1)
     drv.close()
+
+
+def test_array_like_inputs_are_accepted():
+    drv, _sim = make()
+    q = drv.state().q.copy()
+    drv.stream(list(q), dt=0.1)                      # plain list
+    drv.stream(np.tile(q, (3, 1)).astype(np.float32), dt=0.1)  # float32 array
+    drv.move_to([float(v) for v in q], duration=0.2, block=True)
+    with pytest.raises(ValueError):
+        drv.stream([[0.0] * 5], dt=0.1)
+    drv.close()
