@@ -37,7 +37,10 @@ fn run(seconds: u64, rt: bool) -> (kuka_rsi::stats::Stats, kuka_rsi::sim::SimSta
 #[test]
 fn two_seconds_mostly_on_time() {
     let (stats, status) = run(2, false);
-    assert!(stats.replies > 400, "{stats:?}");
+    // Every simulated cycle answered. Not a fixed count: on CI VMs the simulator's cycle can
+    // stretch to 15 ms, so 2 s may hold 130 cycles instead of 500.
+    assert!(stats.replies > 100, "{stats:?}");
+    assert!(stats.replies + 2 >= status.cycles, "unanswered cycles: {stats:?} {status:?}");
     assert!(stats.late_replies * 50 <= stats.replies, "driver late: {stats:?}");
     assert!((status.late as u64) * 50 <= status.cycles, "robot-side late: {status:?}");
     assert_eq!(stats.parse_errors, 0);

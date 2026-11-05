@@ -101,10 +101,12 @@ fn stream_tracks_a_sine_and_stays_on_time() {
             })
             .collect();
         last = points[4];
+        // Push the next chunk when the previous one is nearly played, like a policy would.
+        // Playback runs on the simulator's cycles, which a CI VM can stretch to 15 ms.
+        assert!(wait_until(Duration::from_secs(10), || drv.stats().queue_len <= 5), "{:?}", drv.stats());
         drv.stream(&points, dt, false).unwrap();
-        std::thread::sleep(Duration::from_millis(500));
     }
-    drv.wait_idle(Duration::from_secs(5)).unwrap();
+    drv.wait_idle(Duration::from_secs(30)).unwrap();
     let st = settled(&drv, &sim);
     assert!((st.q_setpoint_deg[0] - last[0].to_degrees()).abs() < 0.01, "{st:?} vs {}", last[0].to_degrees());
     let s = drv.stats();
@@ -120,11 +122,10 @@ fn empty_queue_holds_and_counts_starvation() {
     let mut q = drv.state().q;
     q[0] += 0.01;
     drv.stream(&[q], Duration::from_millis(40), false).unwrap();
-    drv.wait_idle(Duration::from_secs(2)).unwrap();
-    std::thread::sleep(Duration::from_millis(200));
+    drv.wait_idle(Duration::from_secs(10)).unwrap();
+    assert!(wait_until(Duration::from_secs(5), || drv.stats().starved_cycles > 20), "{:?}", drv.stats());
     let st = drv.state();
     assert!((st.q_command[0] - q[0]).abs() < 1e-9, "{st:?}");
-    assert!(drv.stats().starved_cycles > 20);
     assert!((sim.status().q_setpoint_deg[0] - q[0].to_degrees()).abs() < 1e-6);
 }
 
@@ -201,7 +202,10 @@ fn log_yields_every_cycle() {
     drv.drain_log(&mut v);
     std::thread::sleep(Duration::from_millis(400));
     let n = drv.drain_log(&mut v);
-    assert!((60..=140).contains(&n), "got {n} entries in 400 ms");
+    // Every cycle, none twice: 100 at the 4 ms cycle. No tight lower bound: on CI VMs the
+    // simulator's millisecond sleeps can stretch its cycle to 15 ms.
+    assert!((20..=140).contains(&n), "got {n} entries in 400 ms");
+    assert_eq!(drv.stats().log_drops, 0);
     assert!(v.windows(2).all(|w| w[1].cycle == w[0].cycle + 1), "contiguous cycles");
 }
 
