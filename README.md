@@ -102,3 +102,14 @@ PC to robot, same IPOC, within the cycle:
 `AK` is the absolute correction from the setpoint at `RSI_ON` (`q_start`, captured from
 the first telegram's `ASPos`), so `AK = q_target - q_start` in degrees. `MoveStop` ends
 `RSI_MOVECORR()`; `<EStr>Error: ...</EStr>` stops the robot.
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
+[MIT license](LICENSE-MIT) at your option. The RSI contexts and KRL programs in
+`controller/` are adapted from FZI's `kuka_rsi_driver` and keep its BSD-3-Clause license
+(`controller/LICENSE-FZI`).
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for
+inclusion in this work, as defined in the Apache-2.0 license, shall be dual licensed as
+above, without any additional terms or conditions.
