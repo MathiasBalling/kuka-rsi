@@ -6,6 +6,9 @@ from typing import Any, Self
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
+CSV_HEADER: str
+"""Header of the per-cycle CSV log (see RobotState.csv_row), newline-terminated."""
+
 class Error(Exception): ...
 class LinkLost(Error): ...
 class ProtocolError(Error): ...
@@ -35,6 +38,8 @@ class Limits:
     def validate(self) -> None: ...
 
 class RobotState:
+    def csv_row(self) -> str:
+        """This state as a CSV row matching CSV_HEADER (degrees, millimetres)."""
     @property
     def t(self) -> float: ...
     @property

@@ -4,6 +4,7 @@ The real-time loop lives in Rust (`kuka_rsi._core`); this package only re-export
 """
 
 from kuka_rsi._core import (
+    CSV_HEADER,
     ControllerSim,
     Driver,
     Error,
@@ -17,4 +18,4 @@ from kuka_rsi._core import (
     check_setup,
 )
 
-__all__ = ["ControllerSim", "Driver", "Error", "Faulted", "LimitError", "Limits", "LinkLost", "ProtocolError", "RobotState", "Stats", "check_setup"]
+__all__ = ["CSV_HEADER", "ControllerSim", "Driver", "Error", "Faulted", "LimitError", "Limits", "LinkLost", "ProtocolError", "RobotState", "Stats", "check_setup"]

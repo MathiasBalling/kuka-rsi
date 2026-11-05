@@ -305,6 +305,11 @@ pub struct PyRobotState {
 
 #[pymethods]
 impl PyRobotState {
+    /// This state as a CSV row matching `kuka_rsi.CSV_HEADER` (degrees, millimetres).
+    fn csv_row(&self) -> String {
+        kuka_rsi::record::csv_row(&self.inner)
+    }
+
     #[getter]
     fn t(&self) -> f64 {
         self.inner.t
@@ -787,6 +792,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(controller_files, m)?)?;
     m.add_function(wrap_pyfunction!(write_controller_files, m)?)?;
     m.add_function(wrap_pyfunction!(check_setup, m)?)?;
+    m.add("CSV_HEADER", kuka_rsi::record::CSV_HEADER)?;
     m.add("Error", m.py().get_type::<Error>())?;
     m.add("LinkLost", m.py().get_type::<LinkLost>())?;
     m.add("ProtocolError", m.py().get_type::<ProtocolError>())?;
