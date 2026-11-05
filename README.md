@@ -86,10 +86,13 @@ holding the command short). `Limits.kr10_defaults()` keeps an acceleration limit
 Robot to PC every 4 ms:
 
 ```xml
-<Rob TYPE="KukaRsi"><RIst X=".." Y=".." Z=".." A=".." B=".." C=".." /><RSol .../>
+<Rob Type="KUKA"><RIst X=".." Y=".." Z=".." A=".." B=".." C=".." /><RSol .../>
 <AIPos A1=".." ... A6=".." /><ASPos .../><Delay D="0" /><GearTorque A1=".." ... />
 <ProgStatus R="3" /><OvPro R="100" /><IPOC>123645634563</IPOC></Rob>
 ```
+
+The root's `Type` is always `KUKA` (seen on the real controller); `SENTYPE` from the config
+names only the replies.
 
 PC to robot, same IPOC, within the cycle:
 

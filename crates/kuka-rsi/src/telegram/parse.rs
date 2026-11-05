@@ -7,6 +7,10 @@
 
 use super::schema::{Keyword, RobElement, Schema, MAX_SLOTS};
 
+/// `Type` attribute of every `<Rob>` root. The controller always sends `KUKA`; `SENTYPE` in the
+/// config names only the `<Sen>` replies (seen on the KR C5 micro, KSS 8.7, RSI 5.0).
+pub const ROB_TYPE: &str = "KUKA";
+
 /// One robot-to-PC telegram in wire units (degrees, millimetres).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RobotTelegram {
@@ -303,13 +307,13 @@ impl Parser {
         for (key, value) in (Attrs { src: attrs.as_bytes(), pos: 0 }) {
             if key.eq_ignore_ascii_case("TYPE") {
                 saw_type = true;
-                if value != self.schema.sentype {
-                    return Err(ParseError::Sentype { got: value.to_string(), want: self.schema.sentype.clone() });
+                if value != ROB_TYPE {
+                    return Err(ParseError::Sentype { got: value.to_string(), want: ROB_TYPE.to_string() });
                 }
             }
         }
         if !saw_type {
-            return Err(ParseError::Sentype { got: String::new(), want: self.schema.sentype.clone() });
+            return Err(ParseError::Sentype { got: String::new(), want: ROB_TYPE.to_string() });
         }
         Ok(())
     }
@@ -499,7 +503,7 @@ mod tests {
         assert_eq!(p.unknown(), 0);
     }
 
-    const SHIPPED_TELEGRAM: &[u8] = br#"<Rob TYPE="KukaRsi"><RIst X="600.1234" Y="-10.5" Z="780.0" A="180.0" B="70.0" C="-180.0" /><RSol X="600.0" Y="-10.0" Z="780.0" A="180.0" B="70.0" C="-180.0" /><AIPos A1="1.5" A2="-90.0" A3="90.0" A4="0.0" A5="90.0" A6="0.25" /><ASPos A1="1.0" A2="-90.0" A3="90.0" A4="0.0" A5="90.0" A6="0.0" /><Delay D="2" /><GearTorque A1="0.1" A2="0.2" A3="0.3" A4="0.4" A5="0.5" A6="0.6" /><ProgStatus R="3" /><OvPro R="100.0" /><IPOC>4004</IPOC></Rob>"#;
+    const SHIPPED_TELEGRAM: &[u8] = br#"<Rob Type="KUKA"><RIst X="600.1234" Y="-10.5" Z="780.0" A="180.0" B="70.0" C="-180.0" /><RSol X="600.0" Y="-10.0" Z="780.0" A="180.0" B="70.0" C="-180.0" /><AIPos A1="1.5" A2="-90.0" A3="90.0" A4="0.0" A5="90.0" A6="0.25" /><ASPos A1="1.0" A2="-90.0" A3="90.0" A4="0.0" A5="90.0" A6="0.0" /><Delay D="2" /><GearTorque A1="0.1" A2="0.2" A3="0.3" A4="0.4" A5="0.5" A6="0.6" /><ProgStatus R="3" /><OvPro R="100.0" /><IPOC>4004</IPOC></Rob>"#;
 
     #[test]
     fn parses_shipped_layout_into_slots() {
@@ -522,7 +526,7 @@ mod tests {
         let s = schema(SHIPPED);
         let mut p = Parser::new(&s);
         let mut t = RobotTelegram::default();
-        let xml = b"<Rob TYPE=\"KukaRsi\">\n  <AIPos A6=\"6\" A5=\"5\" A4=\"4\" A3=\"3\" A2=\"2\" A1=\"1\"/>\n  <IPOC> 8 </IPOC>\n</Rob>\n";
+        let xml = b"<Rob Type=\"KUKA\">\n  <AIPos A6=\"6\" A5=\"5\" A4=\"4\" A3=\"3\" A2=\"2\" A1=\"1\"/>\n  <IPOC> 8 </IPOC>\n</Rob>\n";
         p.parse(xml, &mut t).unwrap();
         assert_eq!(t.aipos, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
         assert_eq!(t.ipoc, 8);
@@ -535,7 +539,7 @@ mod tests {
         let mut p = Parser::new(&s);
         let mut t = RobotTelegram::default();
         p.parse(SHIPPED_TELEGRAM, &mut t).unwrap();
-        let xml = b"<Rob TYPE=\"KukaRsi\"><Bogus Q=\"1\" /><Other>7</Other><IPOC>4008</IPOC></Rob>";
+        let xml = b"<Rob Type=\"KUKA\"><Bogus Q=\"1\" /><Other>7</Other><IPOC>4008</IPOC></Rob>";
         p.parse(xml, &mut t).unwrap();
         assert_eq!(t.aipos[0], 1.5, "kept");
         assert_eq!(t.slots[6], 3.0, "kept");
@@ -554,15 +558,35 @@ mod tests {
         assert!(p.seen(Keyword::AIPos) && p.seen(Keyword::ASPos) && p.seen(Keyword::Delay));
         assert!(!p.seen(Keyword::MACur), "not in the schema");
 
-        p.parse(b"<Rob TYPE=\"KukaRsi\"><AIPos A1=\"1\" A2=\"0\" A3=\"0\" A4=\"0\" A5=\"0\" A6=\"0\" /><IPOC>8</IPOC></Rob>", &mut t).unwrap();
+        p.parse(b"<Rob Type=\"KUKA\"><AIPos A1=\"1\" A2=\"0\" A3=\"0\" A4=\"0\" A5=\"0\" A6=\"0\" /><IPOC>8</IPOC></Rob>", &mut t).unwrap();
         assert!(p.seen(Keyword::AIPos));
         assert!(!p.seen(Keyword::ASPos), "absent from the last telegram, although its value is kept");
         assert_eq!(t.aspos[0], 1.0);
 
         // A telegram that fails to parse leaves the answer of the last good one.
-        assert!(p.parse(b"<Rob TYPE=\"KukaRsi\"><ASPos A1=\"2\" A2=\"0\" A3=\"0\" A4=\"0\" A5=\"0\" A6=\"0\" /></Rob>", &mut t).is_err());
+        assert!(p.parse(b"<Rob Type=\"KUKA\"><ASPos A1=\"2\" A2=\"0\" A3=\"0\" A4=\"0\" A5=\"0\" A6=\"0\" /></Rob>", &mut t).is_err());
         assert!(p.seen(Keyword::AIPos));
         assert!(!p.seen(Keyword::ASPos));
+    }
+
+    /// First telegram from the real controller (KR C5 micro, KSS 8.7, RSI 5.0), monitor config.
+    const REAL_MONITOR: &[u8] = include_bytes!("../../tests/fixtures/kr10_monitor_first.xml");
+    const SHIPPED_MONITOR: &str = include_str!("../../../../controller/kuka_rsi_monitor.xml");
+
+    #[test]
+    fn parses_the_first_real_telegram() {
+        let s = schema(SHIPPED_MONITOR);
+        let mut p = Parser::new(&s);
+        let mut t = RobotTelegram::default();
+        p.parse(REAL_MONITOR, &mut t).unwrap();
+        assert_eq!(t.ipoc, 3312758);
+        assert_eq!(t.aipos, [-70.1103, -76.3958, 122.9867, -166.6549, 25.7014, -286.8477]);
+        assert_eq!(t.aspos[5], -286.8476);
+        assert_eq!(t.rist[0], 392.5202);
+        assert_eq!(t.delay, 0);
+        assert_eq!(&t.slots[..8], &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 100.0]);
+        assert_eq!(p.missing(), 0);
+        assert_eq!(p.unknown(), 0);
     }
 
     #[test]
@@ -573,15 +597,15 @@ mod tests {
         assert_eq!(p.parse(b"<Sen Type=\"KukaRsi\"><IPOC>1</IPOC></Sen>", &mut t), Err(ParseError::Root("Sen".into())));
         assert_eq!(
             p.parse(b"<Rob TYPE=\"Other\"><IPOC>1</IPOC></Rob>", &mut t),
-            Err(ParseError::Sentype { got: "Other".into(), want: "KukaRsi".into() })
+            Err(ParseError::Sentype { got: "Other".into(), want: "KUKA".into() })
         );
         assert_eq!(
             p.parse(b"<Rob><IPOC>1</IPOC></Rob>", &mut t),
-            Err(ParseError::Sentype { got: String::new(), want: "KukaRsi".into() })
+            Err(ParseError::Sentype { got: String::new(), want: "KUKA".into() })
         );
-        assert_eq!(p.parse(b"<Rob TYPE=\"KukaRsi\"><Delay D=\"0\" /></Rob>", &mut t), Err(ParseError::MissingIpoc));
-        assert!(matches!(p.parse(b"<Rob TYPE=\"KukaRsi\"><IPOC>x</IPOC></Rob>", &mut t), Err(ParseError::Number(_))));
-        assert!(matches!(p.parse(b"<Rob TYPE=\"KukaRsi\"><IPOC>1</IPOC>", &mut t), Err(ParseError::Xml(_))));
+        assert_eq!(p.parse(b"<Rob Type=\"KUKA\"><Delay D=\"0\" /></Rob>", &mut t), Err(ParseError::MissingIpoc));
+        assert!(matches!(p.parse(b"<Rob Type=\"KUKA\"><IPOC>x</IPOC></Rob>", &mut t), Err(ParseError::Number(_))));
+        assert!(matches!(p.parse(b"<Rob Type=\"KUKA\"><IPOC>1</IPOC>", &mut t), Err(ParseError::Xml(_))));
     }
 
     #[test]
@@ -593,7 +617,7 @@ mod tests {
         );
         let mut p = Parser::new(&s);
         let mut t = RobotTelegram::default();
-        p.parse(b"<Rob TYPE=\"T\"><Digout o1=\"1.000000\" o2=\"0.00\" /><DiL>42</DiL><IPOC>12</IPOC></Rob>", &mut t).unwrap();
+        p.parse(b"<Rob Type=\"KUKA\"><Digout o1=\"1.000000\" o2=\"0.00\" /><DiL>42</DiL><IPOC>12</IPOC></Rob>", &mut t).unwrap();
         assert_eq!(&t.slots[0..3], &[1.0, 0.0, 42.0]);
     }
 
@@ -603,7 +627,7 @@ mod tests {
         let mut p = Parser::new(&s);
         let mut t = RobotTelegram::default();
         for i in 0..1000u64 {
-            let xml = format!("<Rob TYPE=\"KukaRsi\"><AIPos A1=\"{i}\" A2=\"0\" A3=\"0\" A4=\"0\" A5=\"0\" A6=\"0\" /><IPOC>{}</IPOC></Rob>", i * 4);
+            let xml = format!("<Rob Type=\"KUKA\"><AIPos A1=\"{i}\" A2=\"0\" A3=\"0\" A4=\"0\" A5=\"0\" A6=\"0\" /><IPOC>{}</IPOC></Rob>", i * 4);
             p.parse(xml.as_bytes(), &mut t).unwrap();
             assert_eq!(t.aipos[0], i as f64);
             assert_eq!(t.ipoc, i * 4);
@@ -615,7 +639,7 @@ mod tests {
         let s = schema(SHIPPED);
         let mut p = Parser::new(&s);
         let mut t = RobotTelegram::default();
-        let xml = b"<?xml version=\"1.0\"?>\n<!-- comment --><Rob TYPE='KukaRsi'><Delay D='7'/><Extra><Deep x=\"1\">z</Deep></Extra><IPOC>12</IPOC></Rob>";
+        let xml = b"<?xml version=\"1.0\"?>\n<!-- comment --><Rob Type='KUKA'><Delay D='7'/><Extra><Deep x=\"1\">z</Deep></Extra><IPOC>12</IPOC></Rob>";
         p.parse(xml, &mut t).unwrap();
         assert_eq!(t.delay, 7);
         assert_eq!(t.ipoc, 12);
@@ -628,10 +652,10 @@ mod tests {
         let mut p = Parser::new(&s);
         let mut t = RobotTelegram::default();
         for bad in [
-            &b"<Rob TYPE=\"KukaRsi\"><Delay D=7 /><IPOC>1</IPOC></Rob>"[..],
-            b"<Rob TYPE=\"KukaRsi\"><Delay D=\"7 /><IPOC>1</IPOC></Rob>",
-            b"<Rob TYPE=\"KukaRsi\"><IPOC>1</IPOC></Rob",
-            b"<Rob TYPE=\"KukaRsi\"><IPOC>1<IPOC></Rob>",
+            &b"<Rob Type=\"KUKA\"><Delay D=7 /><IPOC>1</IPOC></Rob>"[..],
+            b"<Rob Type=\"KUKA\"><Delay D=\"7 /><IPOC>1</IPOC></Rob>",
+            b"<Rob Type=\"KUKA\"><IPOC>1</IPOC></Rob",
+            b"<Rob Type=\"KUKA\"><IPOC>1<IPOC></Rob>",
         ] {
             assert!(matches!(p.parse(bad, &mut t), Err(ParseError::Xml(_))), "{:?}", std::str::from_utf8(bad));
         }
@@ -651,13 +675,13 @@ mod tests {
         let mut p = Parser::new(&s);
         let mut t = RobotTelegram::default();
         // A self-closed IPOC has no text; the text of a later unknown or keyword sibling is not IPOC.
-        assert_eq!(p.parse(b"<Rob TYPE=\"KukaRsi\"><IPOC/><Extra>5</Extra></Rob>", &mut t), Err(ParseError::MissingIpoc));
-        assert_eq!(p.parse(b"<Rob TYPE=\"KukaRsi\"><IPOC/><Delay D=\"3\">5</Delay></Rob>", &mut t), Err(ParseError::MissingIpoc));
+        assert_eq!(p.parse(b"<Rob Type=\"KUKA\"><IPOC/><Extra>5</Extra></Rob>", &mut t), Err(ParseError::MissingIpoc));
+        assert_eq!(p.parse(b"<Rob Type=\"KUKA\"><IPOC/><Delay D=\"3\">5</Delay></Rob>", &mut t), Err(ParseError::MissingIpoc));
         assert_eq!(t.ipoc, 0);
 
         let mut p = Parser::new(&dil_schema());
         let mut t = RobotTelegram::default();
-        p.parse(b"<Rob TYPE=\"T\"><DiL/><Other>42</Other><IPOC>1</IPOC></Rob>", &mut t).unwrap();
+        p.parse(b"<Rob Type=\"KUKA\"><DiL/><Other>42</Other><IPOC>1</IPOC></Rob>", &mut t).unwrap();
         assert_eq!(t.slots[0], 0.0, "Other's text must not land in the DiL slot");
         assert_eq!(t.ipoc, 1);
         assert_eq!(p.unknown(), 1);
@@ -669,12 +693,12 @@ mod tests {
         let mut p = Parser::new(&s);
         let mut t = RobotTelegram::default();
         for bad in [
-            &b"<Rob TYPE=\"KukaRsi\"><IPOC>1</IPOC></Rob></Rob>"[..],
-            b"<Rob TYPE=\"KukaRsi\"><IPOC>1</Foo></Bar>",
-            b"<Rob TYPE=\"KukaRsi\"><Extra></Z><AIPos A1=\"9\" A2=\"0\" A3=\"0\" A4=\"0\" A5=\"0\" A6=\"0\"/><IPOC>1</IPOC></Rob>",
+            &b"<Rob Type=\"KUKA\"><IPOC>1</IPOC></Rob></Rob>"[..],
+            b"<Rob Type=\"KUKA\"><IPOC>1</Foo></Bar>",
+            b"<Rob Type=\"KUKA\"><Extra></Z><AIPos A1=\"9\" A2=\"0\" A3=\"0\" A4=\"0\" A5=\"0\" A6=\"0\"/><IPOC>1</IPOC></Rob>",
             b"</Rob>",
-            b"<Rob TYPE=\"KukaRsi\"><Extra><A><B></A></B></Extra><IPOC>1</IPOC></Rob>",
-            b"<Rob TYPE=\"KukaRsi\"><IPOC>1</IPOC></Rob><Rob TYPE=\"KukaRsi\"><IPOC>2</IPOC></Rob>",
+            b"<Rob Type=\"KUKA\"><Extra><A><B></A></B></Extra><IPOC>1</IPOC></Rob>",
+            b"<Rob Type=\"KUKA\"><IPOC>1</IPOC></Rob><Rob Type=\"KUKA\"><IPOC>2</IPOC></Rob>",
         ] {
             assert!(matches!(p.parse(bad, &mut t), Err(ParseError::Xml(_))), "{:?}", std::str::from_utf8(bad));
         }
@@ -688,7 +712,7 @@ mod tests {
         let mut t = RobotTelegram::default();
         // Rob plus `levels` nested unknown elements, all properly closed.
         let nested = |levels: usize| {
-            let mut xml = String::from("<Rob TYPE=\"KukaRsi\">");
+            let mut xml = String::from("<Rob Type=\"KUKA\">");
             for i in 0..levels {
                 xml.push_str(&format!("<E{i}>"));
             }
@@ -708,10 +732,10 @@ mod tests {
         let s = schema(SHIPPED);
         let mut p = Parser::new(&s);
         let mut t = RobotTelegram::default();
-        for bad in [&b"<?><Rob TYPE=\"KukaRsi\"><IPOC>1</IPOC></Rob>"[..], b"<!--><Rob TYPE=\"KukaRsi\"><IPOC>1</IPOC></Rob>"] {
+        for bad in [&b"<?><Rob Type=\"KUKA\"><IPOC>1</IPOC></Rob>"[..], b"<!--><Rob Type=\"KUKA\"><IPOC>1</IPOC></Rob>"] {
             assert!(matches!(p.parse(bad, &mut t), Err(ParseError::Xml(_))), "{:?}", std::str::from_utf8(bad));
         }
-        p.parse(b"<?xml version=\"1.0\"?><Rob TYPE=\"KukaRsi\"><IPOC>1</IPOC></Rob>", &mut t).unwrap();
+        p.parse(b"<?xml version=\"1.0\"?><Rob Type=\"KUKA\"><IPOC>1</IPOC></Rob>", &mut t).unwrap();
         assert_eq!(t.ipoc, 1);
     }
 
@@ -721,12 +745,12 @@ mod tests {
         let mut p = Parser::new(&s);
         let mut t = RobotTelegram::default();
         for v in ["NaN", "inf", "-inf", "infinity", "1e999"] {
-            let xml = format!("<Rob TYPE=\"KukaRsi\"><AIPos A1=\"{v}\" A2=\"0\" A3=\"0\" A4=\"0\" A5=\"0\" A6=\"0\" /><IPOC>1</IPOC></Rob>");
+            let xml = format!("<Rob Type=\"KUKA\"><AIPos A1=\"{v}\" A2=\"0\" A3=\"0\" A4=\"0\" A5=\"0\" A6=\"0\" /><IPOC>1</IPOC></Rob>");
             assert!(matches!(p.parse(xml.as_bytes(), &mut t), Err(ParseError::Number(_))), "A1={v}");
             assert!(t.aipos[0].is_finite(), "A1={v} reached joint state");
         }
         let mut p = Parser::new(&dil_schema());
-        assert!(matches!(p.parse(b"<Rob TYPE=\"T\"><DiL>NaN</DiL><IPOC>1</IPOC></Rob>", &mut t), Err(ParseError::Number(_))));
+        assert!(matches!(p.parse(b"<Rob Type=\"KUKA\"><DiL>NaN</DiL><IPOC>1</IPOC></Rob>", &mut t), Err(ParseError::Number(_))));
         assert!(t.slots[0].is_finite());
     }
 
@@ -742,7 +766,7 @@ mod tests {
             let mut permuted = Vec::with_capacity(6);
             for i in (1..=6).rev() { let idx = k % i; k /= i; permuted.push(order.remove(idx)); }
             let names = ["A1", "A2", "A3", "A4", "A5", "A6"];
-            let mut xml = String::from("<Rob TYPE=\"KukaRsi\"><AIPos");
+            let mut xml = String::from("<Rob Type=\"KUKA\"><AIPos");
             for &i in &permuted { xml.push_str(&format!(" {}=\"{:.4}\"", names[i], vals[i])); }
             xml.push_str(&format!(" /><IPOC>{ipoc}</IPOC></Rob>"));
             p.parse(xml.as_bytes(), &mut t).unwrap();

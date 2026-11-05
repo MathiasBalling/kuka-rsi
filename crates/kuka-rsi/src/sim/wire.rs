@@ -36,7 +36,7 @@ fn write_value(out: &mut Vec<u8>, ty: ElementType, v: f64, precision: usize) {
 /// Serialize a robot telegram the way the controller would.
 pub fn write_rob(schema: &Schema, tele: &RobotTelegram, precision: usize, out: &mut Vec<u8>) {
     out.clear();
-    let _ = write!(out, "<Rob TYPE=\"{}\">", schema.sentype);
+    let _ = write!(out, "<Rob Type=\"{}\">", crate::telegram::parse::ROB_TYPE);
     for e in &schema.rob {
         match e {
             RobElement::Keyword(Keyword::Delay) => {
@@ -278,7 +278,7 @@ mod tests {
         let mut out = Vec::new();
         write_rob(&s, &t, 4, &mut out);
         let text = std::str::from_utf8(&out).unwrap();
-        assert!(text.starts_with("<Rob TYPE=\"KukaRsi\"><RIst X=\"600.1234\""), "{text}");
+        assert!(text.starts_with("<Rob Type=\"KUKA\"><RIst X=\"600.1234\""), "{text}");
         assert!(text.contains("<ProgStatus R=\"3\" />"), "{text}");
         assert!(text.contains("<Delay D=\"3\" />"), "{text}");
         assert!(text.ends_with("<IPOC>4004</IPOC></Rob>"), "{text}");
@@ -324,7 +324,7 @@ mod tests {
         let mut back = SensorTelegram::default();
         assert!(matches!(parse_sen(&s, b"<Sen Type=\"Other\"><IPOC>1</IPOC></Sen>", &mut back), Err(ParseError::Sentype { .. })));
         assert!(matches!(parse_sen(&s, b"<Sen Type=\"KukaRsi\"><EStr/></Sen>", &mut back), Err(ParseError::MissingIpoc)));
-        assert!(matches!(parse_sen(&s, b"<Rob TYPE=\"KukaRsi\"><IPOC>1</IPOC></Rob>", &mut back), Err(ParseError::Root(_))));
+        assert!(matches!(parse_sen(&s, b"<Rob Type=\"KUKA\"><IPOC>1</IPOC></Rob>", &mut back), Err(ParseError::Root(_))));
         assert!(matches!(parse_sen(&s, b"<Sen><IPOC>1</IPOC></Sen>", &mut back), Err(ParseError::Sentype { .. })));
     }
 
