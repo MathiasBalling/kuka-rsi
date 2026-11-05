@@ -22,9 +22,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut q1 = q0;
     q1[5] += 2f64.to_radians();
     drv.move_to(q1, Duration::from_secs(2))?;
-    drv.wait_idle(Duration::from_secs(5))?;
+    drv.wait_idle(Duration::from_secs(60))?; // playback follows the pendant override: 10 % stretches 2 s to 20 s
     drv.move_to(q0, Duration::from_secs(2))?;
-    drv.wait_idle(Duration::from_secs(5))?;
+    drv.wait_idle(Duration::from_secs(60))?; // playback follows the pendant override: 10 % stretches 2 s to 20 s
     println!("{:?}", drv.stats());
     drv.close()?;
     Ok(())
