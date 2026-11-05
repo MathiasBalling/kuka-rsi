@@ -24,6 +24,9 @@ struct Args {
     wait: f64,
     #[arg(long, default_value = "MoveStop")]
     stop_channel: String,
+    /// Write every cycle to this CSV file (see kuka_rsi::record)
+    #[arg(long)]
+    log: Option<std::path::PathBuf>,
 }
 
 /// Set by the Ctrl-C handler; the handler then closes the driver and exits with 130.
@@ -53,6 +56,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if !cfg.ethernet.onlysend && cfg.ethernet.receive.iter().any(|e| e.tag == a.stop_channel) {
         cfg = cfg.stop_channel(&a.stop_channel);
     }
+    let mut csv = a.log.as_ref().map(kuka_rsi::record::CsvLog::create).transpose()?;
+    let mut states = Vec::new();
     let drv = std::sync::Arc::new(Driver::spawn(cfg)?);
     // Ctrl-C ends the robot program cleanly: close() pulses MoveStop and waits for the session
     // to end. Without this the robot stops on its own after the ETHERNET timeout, with a message.
@@ -70,6 +75,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut last_stats = Instant::now();
     loop {
         std::thread::sleep(Duration::from_millis(200));
+        if let Some(c) = &mut csv {
+            states.clear();
+            drv.drain_log(&mut states);
+            c.write(&states)?;
+        }
         let st = drv.state();
         println!(
             "t={:8.3} ipoc={} q(deg)={:?} delay={} ov={:.0}% running={}",
@@ -94,6 +104,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if a.seconds > 0.0 && t0.elapsed().as_secs_f64() >= a.seconds {
             break;
         }
+    }
+    if let Some(c) = &mut csv {
+        states.clear();
+        drv.drain_log(&mut states);
+        c.write(&states)?;
+        println!(
+            "logged {} cycles to {}",
+            c.rows(),
+            a.log.as_ref().map(|p| p.display().to_string()).unwrap_or_default()
+        );
     }
     drv.close()?;
     Ok(())

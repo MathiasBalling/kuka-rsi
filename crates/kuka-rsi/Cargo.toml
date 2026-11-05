@@ -46,3 +46,11 @@ required-features = ["cli"]
 [[bin]]
 name = "rsi-doctor"
 required-features = ["cli"]
+
+[[example]]
+name = "jog"
+test = true
+
+[[example]]
+name = "stream_trajectory"
+test = true
