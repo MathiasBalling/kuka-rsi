@@ -266,20 +266,26 @@ mod tests {
         let mut buf = [0u8; 64];
         l.recv_newest(&mut buf).unwrap().unwrap();
 
+        // Flood until the wait is over, without sleeping: on CI VMs a millisecond sleep can take
+        // 10 ms or more, so a paced flood may not reach the link often enough to prove anything.
         let other = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flooding = done.clone();
         let handle = std::thread::spawn(move || {
-            for _ in 0..40 {
-                other.send_to(b"x", addr).unwrap();
-                std::thread::sleep(Duration::from_millis(5));
+            let t0 = Instant::now();
+            while !flooding.load(std::sync::atomic::Ordering::SeqCst) && t0.elapsed() < Duration::from_secs(2) {
+                let _ = other.send_to(b"x", addr); // a full socket buffer may refuse some
+                std::thread::yield_now();
             }
         });
 
         let t0 = Instant::now();
         let r = l.recv_newest(&mut buf).unwrap();
         let elapsed = t0.elapsed();
+        done.store(true, std::sync::atomic::Ordering::SeqCst);
+        handle.join().unwrap();
         assert!(r.is_none());
         assert!(elapsed < Duration::from_millis(200), "elapsed = {elapsed:?}");
         assert!(l.foreign() >= 5, "foreign = {}", l.foreign());
-        handle.join().unwrap();
     }
 }

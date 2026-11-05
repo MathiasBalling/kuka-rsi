@@ -94,9 +94,12 @@ def test_log_stats_and_events():
     drv.drain_log()
     time.sleep(0.4)
     log = drv.drain_log()
-    assert 60 <= len(log) <= 140
-    assert log[1].cycle == log[0].cycle + 1
+    # Every cycle, none twice: 100 at the 4 ms cycle. No tight lower bound: on CI VMs the
+    # simulator's millisecond sleeps can stretch its cycle to 15 ms.
+    assert 20 <= len(log) <= 140
+    assert all(b.cycle == a.cycle + 1 for a, b in zip(log, log[1:]))
     st = drv.stats()
+    assert st.log_drops == 0
     assert st.cycles > 0 and st.sessions == 1
     assert "replies" in st.as_dict()
     time.sleep(0.15)
