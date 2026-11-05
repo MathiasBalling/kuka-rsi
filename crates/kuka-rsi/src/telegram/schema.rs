@@ -108,9 +108,12 @@ fn split_tag(tag: &str) -> (&str, Option<&str>) {
     }
 }
 
+/// An element name, its attributes, and the type of a text element.
+type Group = (String, Vec<Attr>, Option<ElementType>);
+
 /// Group consecutive `Name.Attr` elements into `(name, attrs)`, keep text elements as `(name, [])`.
-fn group(elements: &[Element]) -> Result<Vec<(String, Vec<Attr>, Option<ElementType>)>> {
-    let mut out: Vec<(String, Vec<Attr>, Option<ElementType>)> = Vec::new();
+fn group(elements: &[Element]) -> Result<Vec<Group>> {
+    let mut out: Vec<Group> = Vec::new();
     for e in elements {
         let Index::Channel(n) = e.indx else { continue };
         let slot = n as usize - 1;

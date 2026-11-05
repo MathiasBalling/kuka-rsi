@@ -94,7 +94,7 @@ impl RobotState {
         }
         self.delay = tele.delay;
         self.speed_override = map.ov_pro.map_or(1.0, |s| (tele.slots[s] / 100.0).clamp(0.0, 1.0));
-        self.program_running = map.prog_status.map_or(true, |s| tele.slots[s].round() as i64 == 3);
+        self.program_running = map.prog_status.is_none_or(|s| tele.slots[s].round() as i64 == 3);
     }
 }
 

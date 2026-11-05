@@ -247,11 +247,7 @@ impl PyControllerSim {
     fn status<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         match &self.handle {
             Some(h) => status_dict(py, &h.status()),
-            None => {
-                let mut s = SimStatus::default();
-                s.exit = self.last_exit;
-                status_dict(py, &s)
-            }
+            None => status_dict(py, &SimStatus { exit: self.last_exit, ..SimStatus::default() }),
         }
     }
 

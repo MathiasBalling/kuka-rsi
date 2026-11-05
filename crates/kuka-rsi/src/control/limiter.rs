@@ -101,8 +101,8 @@ impl Limiter {
         let dt = self.dt;
         let mut q = target;
         let mut hit = ClampCounts::default();
-        for i in 0..6 {
-            q[i] = clamp_counted(q[i], l.position_min[i], l.position_max[i], &mut hit.position);
+        for ((qi, &lo), &hi) in q.iter_mut().zip(&l.position_min).zip(&l.position_max) {
+            *qi = clamp_counted(*qi, lo, hi, &mut hit.position);
         }
         let target_clamped = q;
         let Some(prev) = self.prev else {

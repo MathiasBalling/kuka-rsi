@@ -62,9 +62,9 @@ fn handshake_captures_start_pose_and_close_stops_the_program() {
     assert_eq!(st.session, SessionState::Active);
     assert_eq!(drv.session(), SessionState::Active);
     let start = sim.status().q_setpoint_deg;
-    for i in 0..6 {
-        assert!((st.q[i] - start[i].to_radians()).abs() < 1e-6, "{st:?}");
-        assert!(st.ak[i].abs() < 1e-9);
+    for ((q, s), ak) in st.q.iter().zip(start).zip(&st.ak) {
+        assert!((q - s.to_radians()).abs() < 1e-6, "{st:?}");
+        assert!(ak.abs() < 1e-9);
     }
     assert_eq!(drv.stats().sessions, 1);
     std::thread::sleep(Duration::from_millis(120)); // events reach the history via the monitor thread (Task 15)

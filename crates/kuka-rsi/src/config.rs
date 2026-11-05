@@ -146,6 +146,7 @@ impl RawElement {
 
 impl EthernetConfig {
     /// Parse and validate the XML text of an `RSI_EthernetConfig` file.
+    #[allow(clippy::should_implement_trait)] // returns this crate's Result; public name kept
     pub fn from_str(xml: &str) -> Result<Self> {
         let raw: RawRoot =
             quick_xml::de::from_str(xml).map_err(|e| cfg_err(format!("cannot parse Ethernet config XML: {e}")))?;
@@ -226,7 +227,7 @@ impl EthernetConfig {
     }
 
     fn validate_section(section: &str, elements: &[Element], keywords: &[&str]) -> Result<()> {
-        let mut seen = vec![false; 65];
+        let mut seen = [false; 65];
         for e in elements {
             match e.indx {
                 Index::Internal => {
@@ -316,6 +317,8 @@ impl Limits {
         self
     }
 
+    // `!(x > 0.0)` on purpose: unlike `x <= 0.0` it also rejects NaN.
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
     pub fn validate(&self) -> Result<()> {
         for i in 0..6 {
             let n = AXIS_NAMES[i];

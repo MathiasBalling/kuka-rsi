@@ -8,7 +8,7 @@ use quick_xml::events::{BytesStart, Event};
 use crate::config::ElementType;
 use crate::telegram::{Keyword, ParseError, RobElement, RobotTelegram, Schema, SenElement, SensorTelegram};
 
-fn keyword_values<'a>(k: Keyword, t: &'a RobotTelegram) -> &'a [f64] {
+fn keyword_values(k: Keyword, t: &RobotTelegram) -> &[f64] {
     match k {
         Keyword::RIst => &t.rist,
         Keyword::RSol => &t.rsol,
@@ -224,29 +224,27 @@ pub fn parse_sen(schema: &Schema, bytes: &[u8], out: &mut SensorTelegram) -> Res
                     }
                 }
             }
-            Event::GeneralRef(r) => {
-                if depth == 2 {
-                    match target {
-                        Some(Target::EStr) => {
-                            let resolved = match r.resolve_char_ref().map_err(|e| ParseError::Xml(e.to_string()))? {
-                                Some(ch) => ch.to_string(),
-                                None => {
-                                    let name: &str = r.as_ref();
-                                    quick_xml::escape::resolve_predefined_entity(name)
-                                        .ok_or_else(|| ParseError::Xml(format!("unknown entity &{name};")))?
-                                        .to_string()
-                                }
-                            };
-                            push_truncated(&mut out.estr, &resolved);
-                        }
-                        // Numeric fields (IPOC, user slots) never legitimately contain an
-                        // entity reference; treat one as malformed rather than let the
-                        // surrounding text fragments silently overwrite each other.
-                        Some(Target::Ipoc) | Some(Target::Slot(_)) => {
-                            return Err(ParseError::Xml("entity reference inside a numeric field".into()));
-                        }
-                        None => {}
+            Event::GeneralRef(r) if depth == 2 => {
+                match target {
+                    Some(Target::EStr) => {
+                        let resolved = match r.resolve_char_ref().map_err(|e| ParseError::Xml(e.to_string()))? {
+                            Some(ch) => ch.to_string(),
+                            None => {
+                                let name: &str = r.as_ref();
+                                quick_xml::escape::resolve_predefined_entity(name)
+                                    .ok_or_else(|| ParseError::Xml(format!("unknown entity &{name};")))?
+                                    .to_string()
+                            }
+                        };
+                        push_truncated(&mut out.estr, &resolved);
                     }
+                    // Numeric fields (IPOC, user slots) never legitimately contain an
+                    // entity reference; treat one as malformed rather than let the
+                    // surrounding text fragments silently overwrite each other.
+                    Some(Target::Ipoc) | Some(Target::Slot(_)) => {
+                        return Err(ParseError::Xml("entity reference inside a numeric field".into()));
+                    }
+                    None => {}
                 }
             }
             _ => {}
@@ -317,8 +315,8 @@ mod tests {
             Writer::new(&s).write(&t, &mut out);
             let mut back = SensorTelegram::default();
             parse_sen(&s, &out, &mut back).unwrap();
-            for i in 0..6 {
-                proptest::prop_assert!((back.ak[i] - ak[i]).abs() < 1e-6, "axis {}: {} vs {}", i, back.ak[i], ak[i]);
+            for (i, (got, want)) in back.ak.iter().zip(&ak).enumerate() {
+                proptest::prop_assert!((got - want).abs() < 1e-6, "axis {}: {} vs {}", i, got, want);
             }
             proptest::prop_assert_eq!(back.ipoc, ipoc);
         }

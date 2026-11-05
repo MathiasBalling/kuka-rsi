@@ -807,7 +807,7 @@ mod tests {
             for &i in &permuted { xml.push_str(&format!(" {}=\"{:.4}\"", names[i], vals[i])); }
             xml.push_str(&format!(" /><IPOC>{ipoc}</IPOC></Rob>"));
             p.parse(xml.as_bytes(), &mut t).unwrap();
-            for i in 0..6 { proptest::prop_assert!((t.aipos[i] - vals[i]).abs() < 1e-4); }
+            for (got, want) in t.aipos.iter().zip(&vals) { proptest::prop_assert!((got - want).abs() < 1e-4); }
             proptest::prop_assert_eq!(t.ipoc, ipoc);
         }
     }

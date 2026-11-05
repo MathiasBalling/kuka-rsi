@@ -7,6 +7,9 @@ use crate::config::Limits;
 /// Points per `Stream` command; the API splits longer chunks.
 pub const MAX_CHUNK: usize = 64;
 
+// `Stream` is large (~3 KB) on purpose: boxing it would allocate per command and free on the
+// real-time thread.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
     /// Absolute joint targets (rad), each `cycles_per_point` cycles (may be fractional) after the
