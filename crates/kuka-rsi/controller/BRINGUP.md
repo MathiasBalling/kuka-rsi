@@ -168,6 +168,11 @@ stay within 30° per axis (A6 45°) around the pose the robot starts in; check t
 that pose first. After any stop on the pendant: acknowledge, then Edit > Reset program before
 the next start.
 
+In T1 and T2 every start of `kuka_rsi` raises the acknowledgement message "Caution – sensor
+correction is activated!!!" at `RSI_ON`; acknowledge it and press Start again. The safety
+controller generates it (RSI 5.0 manual, section 3.1) and it cannot be switched off; in AUT and
+AUT EXT it does not appear. The driver keeps waiting meanwhile, so allow for it in `--wait`.
+
 At the desk:
 
 ```bash
@@ -310,7 +315,7 @@ and 0 when it is stopped (S6.5); the `ipoc` column rises by 4 per row; whether t
 | S1 files, test 1, doctor | Pass: new folder layout copied, test 1 and every doctor check passed |
 | S2 single axes, 10° / 30° (max lag per axis) | Pass: A1 to A6 each 30° and back. Logged: A6 10° max lag 0.32°, end error 0.003°; A1 30° max lag 0.30°, end error 0.0003°; other axes still within 0.001°; `Delay` 0, no cycle gaps. Override read 100 % in both logs; the lag at 10°/s is about 30 ms (7 to 8 cycles) |
 | S3 five axes, 3 repeats | Pass: A1 +30, A2 −10, A3 +15, A5 +20, A6 +45 together, 3 × out and back in 52.4 s. Every leg ends within 0.006° of target (A2 worst, under gravity), max lag A6 0.32°, A1 0.19°, A5 0.15°, A3 0.11°, A2 0.07°; A4 still within 0.001°; 13,117 cycles, no gaps, `Delay` 0 |
-| S4 speed 10 / 20 / 30 °/s (max lag, T1 limit) | |
+| S4 speed 10 / 20 / 30 °/s (max lag, T1 limit) | A1 30° at 30 °/s: the robot stopped sending after 0.78 s, at +9.6° and 27 °/s (TCP 158 mm/s, lag 0.86° ≈ 29 ms, `Delay` 0, no late replies, last telegram normal); the driver reported `LinkLost`. Pendant message not recorded; repeat next session and read it before going on. A6 10/20/30 and A1 20 °/s were run without logs |
 | S5 stream Rust / Python, stop-after | |
 | S6.1 `fault()` | |
 | S6.2 cable pulled, reconnect | |
