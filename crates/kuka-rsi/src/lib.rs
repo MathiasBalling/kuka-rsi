@@ -9,6 +9,7 @@ pub mod doctor;
 pub mod driver;
 pub mod error;
 pub mod link;
+pub mod record;
 pub mod sim;
 pub mod state;
 pub mod stats;
