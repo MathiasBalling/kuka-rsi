@@ -482,3 +482,15 @@ fn limits_are_the_live_value_and_config_keeps_the_constructor_value() {
     assert_eq!(drv.config().limits, initial, "config() keeps the constructor value");
     drv.close().unwrap();
 }
+
+#[test]
+fn robot_addr_is_the_telegram_source_during_a_session() {
+    let drv = driver(150);
+    assert_eq!(drv.robot_addr(), None);
+    let mut sim = ControllerSim::spawn(sim_config(&drv)).unwrap();
+    drv.wait_for_robot(Duration::from_secs(3)).unwrap();
+    assert_eq!(drv.robot_addr(), Some(sim.local_addr()));
+    sim.stop().unwrap();
+    assert!(wait_until(Duration::from_secs(2), || drv.session() == SessionState::Lost), "{:?}", drv.session());
+    assert_eq!(drv.robot_addr(), None);
+}

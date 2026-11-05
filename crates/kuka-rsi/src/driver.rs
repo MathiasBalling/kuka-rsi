@@ -1,8 +1,8 @@
 //! The driver: one real-time thread answering telegrams, and the handle callers use.
 
 use std::collections::{HashMap, VecDeque};
-use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicUsize, Ordering};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -48,7 +48,22 @@ struct Shared {
     /// Set by `close` once the real-time thread has been joined: the monitor thread records the
     /// last events and exits.
     monitor_stop: AtomicBool,
+    /// The robot's address during a session, packed by `pack_addr` (0 outside a session).
+    robot_addr: AtomicU64,
     start: Instant,
+}
+
+/// Pack an IPv4 socket address into a `u64` (bit 48 set, address, port) so the real-time thread
+/// can publish it without a lock. RSI runs over IPv4; an IPv6 peer packs to 0 (unknown).
+fn pack_addr(addr: Option<SocketAddr>) -> u64 {
+    match addr {
+        Some(SocketAddr::V4(a)) => 1 << 48 | u64::from(a.ip().to_bits()) << 16 | u64::from(a.port()),
+        _ => 0,
+    }
+}
+
+fn unpack_addr(v: u64) -> Option<SocketAddr> {
+    (v >> 48 == 1).then(|| SocketAddrV4::new(Ipv4Addr::from_bits((v >> 16) as u32), v as u16).into())
 }
 
 fn session_from_u8(v: u8) -> SessionState {
@@ -205,6 +220,7 @@ impl Rt {
     fn lose_link(&mut self) {
         self.session.lost();
         self.link.reset_peer();
+        self.shared.robot_addr.store(0, Ordering::Release);
         self.set_session(SessionState::Lost);
         self.drain_session_events();
         self.publish();
@@ -289,6 +305,7 @@ impl Rt {
             // Whatever is still queued was sent for an earlier session (the API rejects motion
             // while no session is active): settings apply, motion is rejected.
             self.drain_commands_inactive();
+            self.shared.robot_addr.store(pack_addr(self.link.peer()), Ordering::Release);
             self.session.start(&self.tele);
             self.stats.sessions += 1;
             self.last_ipoc = None;
@@ -525,6 +542,7 @@ impl Driver {
             faulted: AtomicBool::new(false),
             in_flight: AtomicUsize::new(0),
             monitor_stop: AtomicBool::new(false),
+            robot_addr: AtomicU64::new(0),
             start: Instant::now(),
         });
         let (state_in, state_out) = triple_buffer::triple_buffer(&RobotState::default());
@@ -610,6 +628,12 @@ impl Driver {
 
     pub fn local_addr(&self) -> SocketAddr {
         self.local_addr
+    }
+
+    /// The address the robot's telegrams come from during a session (its RSI sensor interface),
+    /// `None` outside a session.
+    pub fn robot_addr(&self) -> Option<SocketAddr> {
+        unpack_addr(self.shared.robot_addr.load(Ordering::Acquire))
     }
 
     pub fn session(&self) -> SessionState {
@@ -887,6 +911,16 @@ impl Drop for Driver {
 mod tests {
     use super::*;
     use crate::stats::ClampKind;
+
+    #[test]
+    fn robot_addr_packs_ipv4_and_drops_ipv6() {
+        for a in ["192.168.10.147:59152", "0.0.0.0:0", "255.255.255.255:65535"] {
+            let a: SocketAddr = a.parse().unwrap();
+            assert_eq!(unpack_addr(pack_addr(Some(a))), Some(a));
+        }
+        assert_eq!(unpack_addr(pack_addr(None)), None);
+        assert_eq!(unpack_addr(pack_addr(Some("[::1]:5".parse().unwrap()))), None);
+    }
 
     #[test]
     fn rate_limiter_allows_one_per_kind_per_interval() {
