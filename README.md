@@ -49,6 +49,8 @@ cargo test -p kuka-rsi                     # Rust
 cargo test -p kuka-rsi --features cli --test cli
 cargo test -p kuka-rsi --test no_alloc      # allocation proof
 cargo test -p kuka-rsi --release --test soak -- --ignored --nocapture
+cargo fmt --all --check                    # CI enforces both
+cargo clippy --workspace --all-targets --features kuka-rsi/cli -- -D warnings
 uv --directory crates/kuka-rsi-py sync                                         # Python (add --reinstall-package kuka-rsi after Rust changes)
 uv --directory crates/kuka-rsi-py run pytest tests
 ```
