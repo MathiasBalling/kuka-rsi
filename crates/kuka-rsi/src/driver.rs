@@ -641,8 +641,10 @@ impl Driver {
     }
 
     /// A `fault` has been applied: the command is frozen, and `stream`, `move_to`, `notify` and
-    /// `wait_idle` return `Error::Faulted` until the KRL program is restarted (a new session).
-    /// Becomes true with the first telegram after `fault` (the real-time thread applies it).
+    /// `wait_idle` return `Error::Faulted` for the rest of the session. Becomes true with the
+    /// first telegram after `fault` (the real-time thread applies it) and false when the session
+    /// ends: once the robot stops on the fault the link is lost and those calls return
+    /// `Error::LinkLost` until the KRL program restarts (a new session).
     pub fn is_faulted(&self) -> bool {
         self.shared.faulted.load(Ordering::Acquire)
     }

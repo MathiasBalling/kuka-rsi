@@ -116,8 +116,10 @@ class Driver:
         """True once a `fault()` has been applied (with the next telegram after the call).
 
         The command stays frozen and `stream`, `move_to`, `notify` and `wait_idle` raise
-        `Faulted` until the KRL program restarts (a new session). A fault is a state within
-        an `"Active"` session, so `session()` does not show it.
+        `Faulted` for the rest of the session. A fault is a state within an `"Active"`
+        session, so `session()` does not show it; when the robot stops on the fault the
+        session ends ("Lost"), `is_faulted()` turns false and those calls raise `LinkLost`
+        until the KRL program restarts (a new session).
         """
     def wait_for_robot(self, timeout: float = 60.0) -> None: ...
     def wait_idle(self, timeout: float = 10.0) -> None:
@@ -148,9 +150,9 @@ class Driver:
     def fault(self, msg: str) -> None:
         """Stop the robot through `EStr` (`Error: msg`) and freeze the command.
 
-        The fault persists until the KRL program restarts (a new session); meanwhile
-        `stream`, `move_to`, `notify` and `wait_idle` raise `Faulted` and `is_faulted()` is
-        true.
+        For the rest of the session `stream`, `move_to`, `notify` and `wait_idle` raise
+        `Faulted` and `is_faulted()` is true; motion resumes only after the KRL program
+        restarts (a new session).
         """
     def notify(self, msg: str) -> None:
         """Show `msg` on the smartHMI. Raises `Faulted` after a `fault()`."""
