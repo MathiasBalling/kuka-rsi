@@ -51,6 +51,11 @@ def main() -> None:
             text = text.replace(START_POSE, "PTP $AXIS_ACT   ; bring-up: stay where the robot is")
         (program / name).write_bytes(crlf(text).encode("utf-8"))
 
+    # macOS writes AppleDouble "._name" files next to each file on FAT/exFAT sticks; on the
+    # controller they would show up as broken programs and configs.
+    for p in a.out_dir.rglob("._*"):
+        p.unlink()
+
     for p in sorted(a.out_dir.rglob("*")):
         if p.is_file():
             print(p)
