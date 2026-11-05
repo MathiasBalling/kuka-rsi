@@ -132,7 +132,7 @@ playback follows the pendant override, so 10 % takes ten times as long. Pass: th
 measured A6 angle reaches start + `--deg` and returns, the stats show no clamps and no late
 replies, the program ends cleanly. 2° is hard to see on the robot; 45° over 10 s is clear.
 
-Next: `stream_trajectory` (±3° sine on A6), then checklist steps 4 to 6 in `README.md`.
+Next: the second session below (bigger moves, streaming, fault paths).
 
 ## Notes from the first bring-up (2026-11-05)
 
@@ -159,6 +159,166 @@ Results (Mac, macOS, USB 1 Gbit adapter, Rust driver):
 | 1 monitor, 60 s | 14,993 telegrams at 250 Hz, IPOC +4 per telegram, joints equal to the pendant, 7 late reads by the Mac (max 10 ms) |
 | 2 hold, 60 s | 14,996 replies, 1 late (6.8 ms), mean latency 0.13 ms, robot `Delay` 0, clean `MoveStop` end |
 | 3 A6 +45° / 10 s and back | measured A6 −286.847 → −241.846 → −286.849°, 5,152 replies, 0 late, max latency 0.96 ms, no clamps |
+
+## Second session: bigger moves, streaming, fault paths
+
+Goal: confirm the driver on the moves and failures a real application will see before the
+first release. Every step in T1, hand on the enabling switch, someone at the E-stop. Offsets
+stay within 30° per axis (A6 45°) around the pose the robot starts in; check the cell around
+that pose first. After any stop on the pendant: acknowledge, then Edit > Reset program before
+the next start.
+
+At the desk:
+
+```bash
+cargo build -p kuka-rsi --features cli --release --bins --examples
+(cd crates/kuka-rsi-py && uv sync)          # Python steps run with: uv run --project crates/kuka-rsi-py python ...
+python3 controller/stage_usb.py /Volumes/<STICK>/kuka_rsi_usb
+```
+
+`--log runs/NAME.csv` on `rsi-monitor`, `jog` and `stream_trajectory` writes every cycle
+(commanded, actual, lag, `AK`, TCP, torques; header in `kuka_rsi::record`). Keep the CSV files of
+every step; they are the evidence for the results table.
+
+### S1. New files, then the known-good tests
+
+1. Copy the new files (step 4). On the controller, delete the program and config files from the
+   first session if their names differ from the ones on the stick, so only one set is there.
+2. Test 1 (`rsi-monitor` with `kuka_rsi_monitor`), as in step 5.
+3. `target/release/rsi-doctor --robot 192.168.10.147 --wait 60`, start `kuka_rsi` when it says
+   "listening".
+
+Pass: test 1 as before; every doctor check PASS (ping may WARN), about 250 telegrams/s, no late
+replies, the program ends cleanly.
+
+### S2. One axis at a time
+
+For each axis N from 1 to 6, at 10 % override, then at 50 %:
+
+```bash
+target/release/examples/jog controller/kuka_rsi_ethernet.xml --axis N --deg 10 --log runs/s2_aN_10.csv
+target/release/examples/jog controller/kuka_rsi_ethernet.xml --axis N --deg 30 --log runs/s2_aN_30.csv
+```
+
+Start `kuka_rsi` after each command. Try +10° first; if the cell needs the other direction, use a
+negative `--deg`. Pass for each leg: measured equals target within 0.1°, 0 late replies, no
+clamps, robot `Delay` max 0 or 1, clean end. Note the max lag per axis.
+
+### S3. Several axes at once
+
+```bash
+target/release/examples/jog controller/kuka_rsi_ethernet.xml \
+    --move A1=30,A2=-10,A3=15,A5=20,A6=45 --repeat 3 --log runs/s3_multi.csv
+```
+
+Pass: all axes start and stop together (the move is synchronised to the slowest axis), each leg
+of all three repeats ends on its target within 0.1°, the last leg ends where the robot started,
+0 late replies, no clamps.
+
+### S4. Speed steps
+
+A6 first (short lever), then A1 with the arm folded:
+
+```bash
+for v in 10 20 30; do
+  target/release/examples/jog controller/kuka_rsi_ethernet.xml --axis 6 --deg 30 --speed $v --log runs/s4_a6_v$v.csv
+done
+```
+
+Start `kuka_rsi` for each run, at 100 % override, still in T1. T1 limits the TCP speed to
+250 mm/s; A1 at 30°/s exceeds that about 0.5 m from the axis. If the controller stops with a T1
+velocity message, note the speed and stay below it; that is the controller's limit, not the
+driver's. Pass: targets reached as in S2, no velocity or acceleration clamps. Note the max lag
+at each speed: `max_tracking_error` (default 2°) should sit clearly above the lag at 30°/s.
+
+### S5. Streaming
+
+Rust, then Python, each once to the end and once stopped early:
+
+```bash
+target/release/examples/stream_trajectory controller/kuka_rsi_ethernet.xml --log runs/s5_rust.csv
+target/release/examples/stream_trajectory controller/kuka_rsi_ethernet.xml --stop-after 4 --log runs/s5_rust_stop.csv
+uv run --project crates/kuka-rsi-py python crates/kuka-rsi-py/examples/stream_path.py \
+    controller/kuka_rsi_ethernet.xml --log runs/s5_py.csv
+uv run --project crates/kuka-rsi-py python crates/kuka-rsi-py/examples/stream_path.py \
+    controller/kuka_rsi_ethernet.xml --stop-after 4 --log runs/s5_py_stop.csv
+```
+
+Defaults: all six axes ±3°, 4 s period, 8 s, new points every 100 ms. Pass: smooth motion, no
+jerk at the 100 ms chunk boundaries, 0 late replies, the stopped runs hold within 0.1° of the last
+target sent, then the return to the start pose ends within 0.1°. A few acceleration clamps are
+expected (the limiter rounds the corners between 100 ms points); velocity clamps should be 0.
+Then `--amp 10 --period 6 --secs 12` once for a larger path.
+
+### S6. Fault paths
+
+1. **`fault()`.** Start this, then `kuka_rsi`:
+
+   ```bash
+   uv run --project crates/kuka-rsi-py python -c "
+   import time, kuka_rsi
+   with kuka_rsi.Driver('controller/kuka_rsi_ethernet.xml', stop_channel='MoveStop') as d:
+       d.wait_for_robot(120); time.sleep(3); d.fault('bring-up fault test'); time.sleep(0.1)
+       print('faulted:', d.is_faulted()); time.sleep(2); print(d.events())"
+   ```
+
+   Pass: `faulted: True`; the robot stops with the message text on the pendant; the events end
+   with `Fault`, `LinkLost` (the program stopped sending).
+2. **Cable pulled during a hold.**
+   `target/release/rsi-monitor --config controller/kuka_rsi_ethernet.xml --wait 300 --keep --log runs/s6_cable.csv`,
+   start `kuka_rsi`, pull the cable at the Mac after about 10 s. Pass: the robot stops within
+   0.4 s with an RSI communication error, the monitor reports the link lost and waits. Plug the
+   cable back in, acknowledge, reset and start the program: the monitor prints "session 2
+   connected" with the start pose.
+3. **Program restarted while the driver runs.** Same monitor command. Cancel the program on the
+   pendant, jog A6 a few degrees by hand, reset and start again. Pass: the new session's start
+   pose equals the pendant's axis values, and the robot holds there with no jump.
+4. **Ctrl-C mid-move.** `jog --axis 6 --deg 30 --secs 10`, Ctrl-C halfway. Pass: the robot stops
+   where it is, the program ends at the final `PTP $AXIS_ACT` without an error message, `jog`
+   exits with 130.
+5. **Override and enabling switch.** `jog --axis 6 --deg 30 --secs 10 --repeat 2`; change the
+   override 10 % → 50 % during the first leg; release the enabling switch during the second, then
+   press it and Start again. Expected: playback speeds up with the override without a jerk; on
+   release the robot stops, the CSV shows `program_running` 0 and the command holding, and after
+   Start the move continues from there. Record what happens; this is new ground.
+
+### S7. Long hold (ARP theory)
+
+Tests the notes from the first session: macOS drops ARP entries after 20 minutes.
+
+```bash
+arp -an | grep 192.168.10.147
+caffeinate -i target/release/rsi-monitor --config controller/kuka_rsi_ethernet.xml \
+    --wait 300 --seconds 1500 --log runs/s7_hold25.csv
+arp -an | grep 192.168.10.147
+```
+
+Start `kuka_rsi`; do not ping. Pass: 25 minutes with 0 late replies and `Delay` 0, in particular
+around minute 20. Then leave the link idle for 25 minutes (no driver, no ping) and run test 2
+without pinging first. If replies are late again and a ping fixes it, the theory holds.
+
+### Checklist item 6
+
+From the CSV logs and the pendant's RSI monitor: `program_running` is 1 while the program runs
+and 0 when it is stopped (S6.5); the `ipoc` column rises by 4 per row; whether the robot's
+`Delay` counts consecutive late packets or a running total (S7, or any run with late replies).
+
+### Results (second session)
+
+| Step | Result |
+| --- | --- |
+| S1 files, test 1, doctor | |
+| S2 single axes, 10° / 30° (max lag per axis) | |
+| S3 five axes, 3 repeats | |
+| S4 speed 10 / 20 / 30 °/s (max lag, T1 limit) | |
+| S5 stream Rust / Python, stop-after | |
+| S6.1 `fault()` | |
+| S6.2 cable pulled, reconnect | |
+| S6.3 program restart | |
+| S6.4 Ctrl-C mid-move | |
+| S6.5 override, enabling switch | |
+| S7 25 min hold, idle start | |
+| Item 6: `ProgStatus`, `IPOC`, `Delay` | |
 
 ## Troubleshooting
 
