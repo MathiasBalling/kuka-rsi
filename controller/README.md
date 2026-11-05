@@ -1,5 +1,7 @@
 # Controller side of the kuka-rsi driver (KR C5 micro, KSS 8.7, RSI 5.0)
 
+First bring-up, step by step (network, USB staging, first three tests): `BRINGUP.md`.
+
 ## Files and where they go
 
 | File | Robot path | Purpose |

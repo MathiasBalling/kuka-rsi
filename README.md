@@ -6,6 +6,7 @@ telegrams; callers stream absolute joint targets and read joint state.
 
 Design: `docs/design.md`.
 Controller files and bring-up: `controller/README.md`.
+First time at the robot, step by step: `controller/BRINGUP.md`.
 
 ## Layout
 
