@@ -1,5 +1,6 @@
 [package]
 name = "kuka-rsi-py"
+description = "Python bindings for kuka-rsi (built with maturin as the kuka-rsi Python package)"
 publish = false
 version.workspace = true
 edition.workspace = true

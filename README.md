@@ -1,19 +1,46 @@
 # kuka-rsi
 
-KUKA.RobotSensorInterface 5.0 client in Rust with Python bindings, for the KR10
-R1100-2 on a KR C5 micro (KSS 8.7). One real-time thread answers the robot's 4 ms
-telegrams; callers stream absolute joint targets and read joint state.
+KUKA.RobotSensorInterface (RSI) 5.0 client in Rust with Python bindings. One real-time
+thread answers the robot's 4 ms telegrams; callers stream absolute joint targets and read
+joint state. A protocol-level controller simulator makes it testable without a robot.
 
-Design: `docs/design.md`.
-Controller files and bring-up: `controller/README.md`.
-First time at the robot, step by step: `controller/BRINGUP.md`.
+Tested on a KR10 R1100-2 with a KR C5 micro (KSS 8.7, RSI 5.0); see [Platforms](#platforms).
+
+- Design: [docs/design.md](https://github.com/MathiasBalling/kuka-rsi/blob/main/docs/design.md)
+- Controller files and setup: [controller/README.md](https://github.com/MathiasBalling/kuka-rsi/blob/main/crates/kuka-rsi/controller/README.md)
+- First time at the robot, step by step: [controller/BRINGUP.md](https://github.com/MathiasBalling/kuka-rsi/blob/main/crates/kuka-rsi/controller/BRINGUP.md)
+- Changes: [CHANGELOG.md](https://github.com/MathiasBalling/kuka-rsi/blob/main/CHANGELOG.md)
+
+## Install
+
+From the first release (v0.1.0) on:
+
+```bash
+pip install kuka-rsi      # Python 3.10+, wheels for Linux and macOS (x86_64, arm64)
+cargo add kuka-rsi
+```
+
+## Files for the robot
+
+The RSI contexts, Ethernet configs and KRL programs the controller needs ship with both
+packages:
+
+```bash
+python -m kuka_rsi.controller robot_files/   # writes them, prints where each one goes
+```
+
+In Rust: `kuka_rsi::controller::write_files(Path::new("robot_files"))`, or
+`kuka_rsi::controller::FILES` for the contents. Set `IP_NUMBER` in
+`kuka_rsi_ethernet.xml` to the PC's address before copying it to the robot; the driver
+reads the same file as its config. [controller/README.md](https://github.com/MathiasBalling/kuka-rsi/blob/main/crates/kuka-rsi/controller/README.md)
+covers installing them on the controller.
 
 ## Layout
 
 - `crates/kuka-rsi`: the library, the `rsi-sim` and `rsi-monitor` binaries (feature
   `cli`), examples and tests.
 - `crates/kuka-rsi-py`: the `kuka_rsi` Python package (PyO3 + maturin).
-- `controller/`: files for the robot.
+- `crates/kuka-rsi/controller/` (also reachable as `controller/`): files for the robot.
 
 ## Build and test
 
@@ -60,6 +87,20 @@ rejected before anything is queued (`LimitError`); `move_to(block=True)` and `wa
 raise `TimeoutError` if the robot cannot settle in time (a paused program, a limit
 holding the command short). `Limits.kr10_defaults()` keeps an acceleration limit of
 300°/s² with braking look-ahead; `max_acceleration=None` disables it.
+
+## Platforms
+
+- **Controller**: KR C5 / KR C5 micro with KSS 8.7 and RSI 5.0, tested with a KR10
+  R1100-2. Other KUKA arms on the same controller should work with their own joint limits:
+  `Limits::kr10_defaults()` holds the KR10 R1100-2 ranges, and every field of `Limits` can
+  be set.
+- **macOS**: tested at the robot (monitor, hold and jog). The real-time thread gets the
+  highest normal thread priority; macOS has no real-time scheduling class for it.
+- **Linux**: the intended deployment and covered by CI, not yet tried at the robot. The
+  real-time thread asks for `SCHED_FIFO` priority 80, which needs `CAP_SYS_NICE` or an
+  rtprio limit (`ulimit -r`, `/etc/security/limits.conf`). Without it the driver runs at
+  normal priority and reports `RtPriority { ok: false }` as a warning.
+- **Windows**: untested, no wheels.
 
 ## Behavior notes
 
@@ -111,10 +152,11 @@ the first telegram's `ASPos`), so `AK = q_target - q_start` in degrees. `MoveSto
 
 ## License
 
-Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
-[MIT license](LICENSE-MIT) at your option. The RSI contexts and KRL programs in
-`controller/` are adapted from FZI's `kuka_rsi_driver` and keep its BSD-3-Clause license
-(`controller/LICENSE-FZI`).
+Licensed under either of [Apache License, Version 2.0](https://github.com/MathiasBalling/kuka-rsi/blob/main/LICENSE-APACHE)
+or [MIT license](https://github.com/MathiasBalling/kuka-rsi/blob/main/LICENSE-MIT) at your
+option. The RSI contexts and KRL programs in `controller/` are adapted from FZI's
+`kuka_rsi_driver` and keep its BSD-3-Clause license
+([controller/LICENSE-FZI](https://github.com/MathiasBalling/kuka-rsi/blob/main/crates/kuka-rsi/controller/LICENSE-FZI)).
 
 Unless you explicitly state otherwise, any contribution intentionally submitted for
 inclusion in this work, as defined in the Apache-2.0 license, shall be dual licensed as
