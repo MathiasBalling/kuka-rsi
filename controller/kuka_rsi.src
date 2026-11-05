@@ -4,6 +4,11 @@
 &PARAM EDITMASK = *
 DEF kuka_rsi( )
 ; =========================================================================
+; kuka-rsi driver: https://github.com/MathiasBalling/kuka-rsi
+; Adapted from FZI kuka_rsi_driver (KR C5 program),
+; Copyright 2024 FZI Forschungszentrum Informatik, BSD-3-Clause;
+; see controller/LICENSE-FZI in the repository.
+;
 ; kuka_rsi: joint-space RSI corrections from the PC (kuka-rsi driver)
 ;
 ; Context:  kuka_rsi.rsix            (Config\User\Common\SensorInterface)

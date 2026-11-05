@@ -1,3 +1,4 @@
+<!-- kuka-rsi driver: https://github.com/MathiasBalling/kuka-rsi -->
 <ROOT>
    <CONFIG>
       <IP_NUMBER>192.168.10.10</IP_NUMBER>   <!-- this PC, on the RSI sensor subnet -->

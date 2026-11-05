@@ -2,6 +2,8 @@
 <!-- Do not change! The content of this file is generated. -->
 <!-- Generated with RSIVisual WorkVisual plugin. -->
 <!-- RobotSensorInterface 5.0 B485 -->
+<!-- kuka-rsi driver: https://github.com/MathiasBalling/kuka-rsi -->
+<!-- Adapted from FZI kuka_rsi_driver (KR C5 context), Copyright 2024 FZI Forschungszentrum Informatik, BSD-3-Clause; see controller/LICENSE-FZI in the repository. -->
 <RsiContext xsi:schemaLocation="RsiContext RsiContext.xsd" SchemaVersion="2.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="RsiContext">
    <RsiObjects xmlns="RsiDriver">
       <RsiObject ObjTypeId="64" ObjType="Ethernet" ObjId="RSI">
