@@ -17,9 +17,12 @@ struct Args {
     /// Bind address override; default IP_NUMBER:PORT from the config
     #[arg(long)]
     bind: Option<SocketAddr>,
-    /// Seconds to run, 0 = until the link is lost
+    /// Seconds to run, 0 = until the link is lost (or Ctrl-C with --keep)
     #[arg(long, default_value_t = 0.0)]
     seconds: f64,
+    /// Keep running after the link is lost and answer the next session (a restarted program)
+    #[arg(long)]
+    keep: bool,
     #[arg(long, default_value_t = 60.0)]
     wait: f64,
     #[arg(long, default_value = "MoveStop")]
@@ -98,8 +101,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             last_stats = Instant::now();
         }
         if drv.session() != kuka_rsi::state::SessionState::Active {
-            println!("link lost");
-            break;
+            if !a.keep {
+                println!("link lost");
+                break;
+            }
+            println!("link lost; waiting for the next session (restart the program on the pendant)");
+            while drv.session() != kuka_rsi::state::SessionState::Active {
+                std::thread::sleep(Duration::from_millis(100));
+                if a.seconds > 0.0 && t0.elapsed().as_secs_f64() >= a.seconds {
+                    break;
+                }
+            }
+            if drv.session() == kuka_rsi::state::SessionState::Active {
+                println!(
+                    "session {} connected, start pose {:?} deg",
+                    drv.stats().sessions,
+                    rad2deg6(&drv.state().q_setpoint)
+                );
+            }
         }
         if a.seconds > 0.0 && t0.elapsed().as_secs_f64() >= a.seconds {
             break;
