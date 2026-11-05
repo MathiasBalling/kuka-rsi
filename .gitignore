@@ -3,3 +3,6 @@ target/
 *.so
 *.pyd
 __pycache__/
+
+# Robot session logs (--log)
+runs/
