@@ -9,6 +9,7 @@ Tested on a KR10 R1100-2 with a KR C5 micro (KSS 8.7, RSI 5.0); see [Platforms](
 - Design: [docs/design.md](https://github.com/MathiasBalling/kuka-rsi/blob/main/docs/design.md)
 - Controller files and setup: [controller/README.md](https://github.com/MathiasBalling/kuka-rsi/blob/main/crates/kuka-rsi/controller/README.md)
 - First time at the robot, step by step: [controller/BRINGUP.md](https://github.com/MathiasBalling/kuka-rsi/blob/main/crates/kuka-rsi/controller/BRINGUP.md)
+- Test sessions on the robot, notes and results: [docs/sessions/](https://github.com/MathiasBalling/kuka-rsi/blob/main/docs/sessions/README.md)
 - Changes: [CHANGELOG.md](https://github.com/MathiasBalling/kuka-rsi/blob/main/CHANGELOG.md)
 
 ## Install
