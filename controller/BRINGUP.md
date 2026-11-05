@@ -49,20 +49,23 @@ RSI gets its own subnet on the same KLI port and cable as EKI.
 If `192.168.10.x` is taken, use another free subnet and change `IP_NUMBER` in both XML files to
 the PC's address on it before staging.
 
-## 3. Mac: a second address on the EKI adapter
+## 3. Mac: two static addresses on the robot adapter
 
 The robot sends its telegrams to `IP_NUMBER` in the XML (`192.168.10.10`) through the RSI
-interface, and the driver binds that address, so the Mac needs it. Add it next to the EKI
-address instead of replacing it, so EKI keeps working:
+interface, and the driver binds that address, so the Mac needs it. EKI needs `172.31.1.77`
+on the same cable. Give the USB LAN adapter one network service per address:
 
-```bash
-ifconfig | awk '/^[a-z]/{i=$1} /inet /{print i, $2}'    # the adapter with 172.31.1.x, e.g. en7
-sudo ifconfig en7 alias 192.168.10.10 255.255.255.0
-```
+1. System Settings > Network > the USB LAN adapter (`networksetup -listnetworkserviceorder`
+   shows which service is the `en` device on the robot cable) > Details > TCP/IP: Configure
+   IPv4 **Manually**, `172.31.1.77`, mask `255.255.255.0`, router empty.
+2. Back in the Network list: "..." > Duplicate Service on that adapter, name it `Robot RSI`,
+   TCP/IP Manually `192.168.10.10`, mask `255.255.255.0`, router empty.
+3. Check: `ifconfig en7 | grep 'inet '` shows both addresses. A `169.254.x.x` address alone
+   means the adapter is still on DHCP and got no static address.
 
-The alias lasts until the adapter is unplugged or the Mac restarts; remove it with
-`sudo ifconfig en7 -alias 192.168.10.10`. For a permanent setup: System Settings > Network > the
-adapter > "..." > Duplicate Service, manual IP `192.168.10.10` / `255.255.255.0`, no router.
+Quick alternative for one session: `sudo ifconfig en7 alias 192.168.10.10 255.255.255.0`
+(gone after unplugging or a restart, and possibly after the link drops while the controller
+reboots).
 
 The macOS firewall must allow incoming UDP for the binaries (or be off).
 
