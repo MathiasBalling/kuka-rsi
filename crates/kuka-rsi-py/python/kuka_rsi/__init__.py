@@ -14,6 +14,7 @@ from kuka_rsi._core import (
     ProtocolError,
     RobotState,
     Stats,
+    check_setup,
 )
 
-__all__ = ["ControllerSim", "Driver", "Error", "Faulted", "LimitError", "Limits", "LinkLost", "ProtocolError", "RobotState", "Stats"]
+__all__ = ["ControllerSim", "Driver", "Error", "Faulted", "LimitError", "Limits", "LinkLost", "ProtocolError", "RobotState", "Stats", "check_setup"]

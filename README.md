@@ -37,7 +37,7 @@ covers installing them on the controller.
 
 ## Layout
 
-- `crates/kuka-rsi`: the library, the `rsi-sim` and `rsi-monitor` binaries (feature
+- `crates/kuka-rsi`: the library, the `rsi-sim`, `rsi-monitor` and `rsi-doctor` binaries (feature
   `cli`), examples and tests.
 - `crates/kuka-rsi-py`: the `kuka_rsi` Python package (PyO3 + maturin).
 - `crates/kuka-rsi/controller/` (also reachable as `controller/`): files for the robot.
@@ -54,6 +54,24 @@ cargo clippy --workspace --all-targets --features kuka-rsi/cli -- -D warnings
 uv --directory crates/kuka-rsi-py sync                                         # Python (add --reinstall-package kuka-rsi after Rust changes)
 uv --directory crates/kuka-rsi-py run pytest tests
 ```
+
+## Check the setup
+
+`rsi-doctor` (feature `cli`) checks the PC side before a session: the config, that
+`IP_NUMBER` is on this PC and the port is free, that traffic to the robot leaves from that
+address, a ping to the robot, real-time priority and (macOS) the firewall. With `--wait` it
+also checks the live link: start the robot program when it says "listening", and it holds the
+robot for `--hold` seconds (default 3), reports the telegram rate, late replies and reply
+latency, then ends the program with `MoveStop`.
+
+```bash
+cargo run -p kuka-rsi --features cli --bin rsi-doctor -- \
+    --config controller/kuka_rsi_ethernet.xml --robot 192.168.10.147 --wait 60
+python -m kuka_rsi.doctor --config kuka_rsi_ethernet.xml --robot 192.168.10.147 --wait 60
+```
+
+It exits non-zero if a check fails. In code: `kuka_rsi::doctor::run` (Rust) or
+`kuka_rsi.check_setup` (Python), which return each check's status, detail and hint.
 
 ## Try it without the robot
 
@@ -106,12 +124,12 @@ holding the command short). `Limits.kr10_defaults()` keeps an acceleration limit
 
 ## Behavior notes
 
-- Ctrl-C in `rsi-monitor`, `jog` and `stream_trajectory` ends the robot program cleanly:
-  the driver pulses `MoveStop`, waits up to 1 s for `RSI_MOVECORR()` to return, and the
-  tool exits with code 130. In Python, leaving the `with Driver(...)` block (also on
-  `KeyboardInterrupt`) does the same through `close()`, but a Ctrl-C during a blocking
-  wait (`wait_idle`, `move_to(block=True)`, `wait_for_robot`) only takes effect when that
-  wait returns.
+- Ctrl-C in `rsi-monitor`, `rsi-doctor`, `jog` and `stream_trajectory` ends the robot
+  program cleanly: the driver pulses `MoveStop`, waits up to 1 s for `RSI_MOVECORR()` to
+  return, and the tool exits with code 130. In Python, leaving the `with Driver(...)` block
+  (also on `KeyboardInterrupt`) does the same through `close()`, but a Ctrl-C during a
+  blocking wait (`wait_idle`, `move_to(block=True)`, `wait_for_robot`) only takes effect
+  when that wait returns. `check_setup` reacts to Ctrl-C at once.
 - `fault(msg)` sends `Error: msg` to the robot and freezes the command. The fault
   persists until the KRL program restarts (a new session): meanwhile `is_faulted()` is
   true and `stream`, `move_to`, `notify` and `wait_idle` raise `Faulted` (Rust:

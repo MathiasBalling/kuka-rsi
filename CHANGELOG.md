@@ -26,6 +26,10 @@ real robot.
   packet loss and the controller's timeout behaviour.
 - `rsi-monitor` binary and `jog` / `stream_trajectory` examples (feature `cli`); Ctrl-C
   ends the robot program cleanly.
+- Setup checks (`kuka_rsi::doctor`, `rsi-doctor`, `kuka_rsi.check_setup`,
+  `python -m kuka_rsi.doctor`): config, address, port, route, ping, real-time priority,
+  firewall, and the live link with its timing. `Driver::robot_addr` reports the robot's
+  address during a session.
 - Python bindings (`kuka_rsi`, one abi3 wheel per platform for CPython 3.10+, numpy
   1.24+) with type stubs.
 - Controller files for KR C5 / KSS 8.7: RSI contexts, Ethernet configs and KRL programs,

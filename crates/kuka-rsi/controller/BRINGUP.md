@@ -17,7 +17,7 @@ cargo build -p kuka-rsi --features cli --release --bins --examples
 python3 controller/stage_usb.py /Volumes/<STICK>/kuka_rsi_usb
 ```
 
-The build puts `rsi-monitor` in `target/release/` and `jog` and `stream_trajectory` in
+The build puts `rsi-doctor` and `rsi-monitor` in `target/release/` and `jog` and `stream_trajectory` in
 `target/release/examples/`. The USB folder holds:
 
 | Folder | Goes to | Contents |
@@ -68,6 +68,19 @@ Quick alternative for one session: `sudo ifconfig en7 alias 192.168.10.10 255.25
 reboots).
 
 The macOS firewall must allow incoming UDP for the binaries (or be off).
+
+Check the PC side: the config, the address and port, the route and a ping to the robot,
+thread priority and the firewall:
+
+```bash
+target/release/rsi-doctor --config controller/kuka_rsi_ethernet.xml --robot 192.168.10.147
+```
+
+Each line reads PASS, WARN (works, but may bite later) or FAIL, with what to do. With the files
+on the controller (step 4), `--wait 60` adds the live checks: start `kuka_rsi` when the doctor
+says "listening"; it holds the robot where it stands for 3 s, reports the telegram rate, late
+replies and the robot's `Delay`, then ends the program with `MoveStop`. Without a Rust build:
+`python -m kuka_rsi.doctor` with the same options.
 
 ## 4. Copy the files to the controller
 
@@ -122,7 +135,8 @@ Next: `stream_trajectory` (±3° sine on A6), then checklist steps 4 to 6 in `RE
 
 ## Notes from the first bring-up (2026-11-05)
 
-- Ping the controller (`ping 192.168.10.147`) right before a closed-loop run. The first test 2
+- Ping the controller (`ping 192.168.10.147`, or run `rsi-doctor --robot 192.168.10.147`)
+  right before a closed-loop run. The first test 2
   failed with every reply counted late (robot `Delay` +1 per cycle, stop after 100 cycles,
   pendant `KSS00489 Stop by $CORRECTION function`, originator A2), while the same replies were
   accepted right after a ping. Likely cause: the Mac's ARP entry for the controller had expired
@@ -149,7 +163,7 @@ Results (Mac, macOS, USB 1 Gbit adapter, Rust driver):
 
 | Symptom | Check |
 | --- | --- |
-| `rsi-monitor` fails to start (bind error) | The Mac has no `192.168.10.10` (step 3) |
+| `rsi-monitor` fails to start (bind error) | The Mac has no `192.168.10.10` (step 3); `rsi-doctor` says which part is missing |
 | No telegrams, robot stops with an RSI communication error | Cable on a KLI port; the RSI interface exists after the cold start; same subnet both ends; macOS firewall. A failed ping to `.147` proves nothing |
 | Program halts at `RSI_CREATE` | Read the message window. A file read or parse error: swap in `SensorInterface_crlf_fallback/`. Otherwise a parameter in the `.rsix`: open it in RSIVisual |
 | Program halts at `RSI_ON` | Message window; often the network or the config XML name |

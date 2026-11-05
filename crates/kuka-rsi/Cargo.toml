@@ -42,3 +42,7 @@ required-features = ["cli"]
 [[bin]]
 name = "rsi-monitor"
 required-features = ["cli"]
+
+[[bin]]
+name = "rsi-doctor"
+required-features = ["cli"]

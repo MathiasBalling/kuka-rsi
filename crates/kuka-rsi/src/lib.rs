@@ -5,6 +5,7 @@
 pub mod config;
 pub mod control;
 pub mod controller;
+pub mod doctor;
 pub mod driver;
 pub mod error;
 pub mod link;

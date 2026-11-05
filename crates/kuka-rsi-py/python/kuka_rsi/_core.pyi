@@ -1,6 +1,6 @@
 import os
 import pathlib
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any, Self
 
 import numpy as np
@@ -102,6 +102,8 @@ class Driver:
         wait: float = 60.0,
     ) -> None: ...
     def local_addr(self) -> str: ...
+    def robot_addr(self) -> str | None:
+        """The robot's address ("ip:port") during a session, else None."""
     def session(self) -> str: ...
     def limits(self) -> Limits:
         """The limits in force: the constructor's, or the last accepted `set_limits`."""
@@ -193,3 +195,23 @@ def controller_files() -> list[tuple[str, str, str | None]]:
     """The bundled controller files as (name, contents, robot_dir); see kuka_rsi.controller."""
 def write_controller_files(directory: str | os.PathLike[str]) -> list[pathlib.Path]:
     """Write the bundled controller files into `directory`; see kuka_rsi.controller.write_files."""
+
+def check_setup(
+    config: str | os.PathLike[str],
+    *,
+    robot: str | None = None,
+    bind: str | None = None,
+    wait: float = 0.0,
+    hold: float = 3.0,
+    stop_channel: str = "MoveStop",
+    report: Callable[[dict[str, Any]], object] | None = None,
+) -> list[dict[str, Any]]:
+    """Check the config, network address and port, route and ping to `robot`, real-time
+    priority and, with `wait` > 0, the live link and its timing.
+
+    Returns one dict per check: name, status ("pass", "warn", "fail", "skip"), detail, hint.
+    `report` gets each check as it completes (with "event": "check") and, when the live check
+    starts listening, {"event": "listening", "addr", "wait"}: start the robot program then. The
+    live check holds the robot for `hold` seconds and ends the program with `stop_channel`.
+    Ctrl-C cancels it and still ends the program cleanly.
+    """

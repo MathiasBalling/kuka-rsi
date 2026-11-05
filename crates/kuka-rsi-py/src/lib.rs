@@ -528,6 +528,11 @@ impl PyDriver {
         Ok(self.driver()?.local_addr().to_string())
     }
 
+    /// The robot's address ("ip:port") during a session, else None.
+    fn robot_addr(&self) -> PyResult<Option<String>> {
+        Ok(self.driver()?.robot_addr().map(|a| a.to_string()))
+    }
+
     fn session(&self) -> PyResult<&'static str> {
         Ok(session_name(self.driver()?.session()))
     }
@@ -666,6 +671,99 @@ impl PyDriver {
     }
 }
 
+enum DoctorMsg {
+    Listening(std::net::SocketAddr, Duration),
+    Check(kuka_rsi::doctor::Check),
+}
+
+fn check_dict<'py>(py: Python<'py>, c: &kuka_rsi::doctor::Check) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("name", c.name)?;
+    d.set_item("status", c.status.label().to_lowercase())?;
+    d.set_item("detail", &c.detail)?;
+    d.set_item("hint", c.hint.as_deref())?;
+    Ok(d)
+}
+
+/// Run the setup checks (see `kuka_rsi::doctor`); returns one dict per check. The checks run on
+/// a background thread, so Ctrl-C (KeyboardInterrupt) cancels the live wait and still ends the
+/// robot program cleanly.
+#[pyfunction]
+#[pyo3(signature = (config, *, robot=None, bind=None, wait=0.0, hold=3.0, stop_channel="MoveStop", report=None))]
+#[allow(clippy::too_many_arguments)]
+fn check_setup<'py>(
+    py: Python<'py>,
+    config: std::path::PathBuf,
+    robot: Option<&str>,
+    bind: Option<&str>,
+    wait: f64,
+    hold: f64,
+    stop_channel: &str,
+    report: Option<Bound<'py, PyAny>>,
+) -> PyResult<Vec<Bound<'py, PyDict>>> {
+    let mut opts = kuka_rsi::doctor::Options::new(config);
+    opts.robot = robot.map(|r| r.parse()).transpose().map_err(|e| PyValueError::new_err(format!("robot: {e}")))?;
+    opts.bind = bind.map(|b| b.parse()).transpose().map_err(|e| PyValueError::new_err(format!("bind: {e}")))?;
+    opts.wait = Duration::from_secs_f64(wait.max(0.0));
+    opts.hold = secs(hold, "hold")?;
+    opts.stop_channel = stop_channel.to_owned();
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    opts.cancel = Some(cancel.clone());
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        kuka_rsi::doctor::run(&opts, |p| {
+            let _ = tx.send(match p {
+                kuka_rsi::doctor::Progress::Listening { addr, wait } => DoctorMsg::Listening(addr, wait),
+                kuka_rsi::doctor::Progress::Check(c) => DoctorMsg::Check(c.clone()),
+            });
+        })
+    });
+    let rx = std::sync::Mutex::new(rx); // a Receiver is Send but not Sync
+    let mut interrupted = None;
+    loop {
+        match py.detach(|| {
+            rx.lock().unwrap_or_else(std::sync::PoisonError::into_inner).recv_timeout(Duration::from_millis(100))
+        }) {
+            Ok(msg) => {
+                let Some(cb) = &report else { continue };
+                let event = match &msg {
+                    DoctorMsg::Listening(addr, wait) => {
+                        let d = PyDict::new(py);
+                        d.set_item("event", "listening")?;
+                        d.set_item("addr", addr.to_string())?;
+                        d.set_item("wait", wait.as_secs_f64())?;
+                        d
+                    }
+                    DoctorMsg::Check(c) => {
+                        let d = check_dict(py, c)?;
+                        d.set_item("event", "check")?;
+                        d
+                    }
+                };
+                if let Err(e) = cb.call1((event,)) {
+                    cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+                    interrupted = Some(e);
+                    break;
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if let Err(e) = py.check_signals() {
+                    cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+                    interrupted = Some(e);
+                    break;
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    let checks = py.detach(|| worker.join()).map_err(|_| Error::new_err("the setup checks panicked"))?;
+    if let Some(e) = interrupted {
+        return Err(e);
+    }
+    checks.iter().map(|c| check_dict(py, c)).collect()
+}
+
 /// The bundled controller files as `(name, contents, robot_dir)`; `kuka_rsi.controller` wraps it.
 #[pyfunction]
 fn controller_files() -> Vec<(&'static str, &'static str, Option<&'static str>)> {
@@ -688,6 +786,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyStats>()?;
     m.add_function(wrap_pyfunction!(controller_files, m)?)?;
     m.add_function(wrap_pyfunction!(write_controller_files, m)?)?;
+    m.add_function(wrap_pyfunction!(check_setup, m)?)?;
     m.add("Error", m.py().get_type::<Error>())?;
     m.add("LinkLost", m.py().get_type::<LinkLost>())?;
     m.add("ProtocolError", m.py().get_type::<ProtocolError>())?;
