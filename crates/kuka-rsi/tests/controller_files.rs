@@ -24,7 +24,10 @@ fn contexts_reference_their_config_and_wire_the_stop_object() {
     assert!(RSIX_MON.contains("ParamValue=\"kuka_rsi_monitor.xml\""));
     for r in [RSIX, RSIX_MON] {
         assert!(r.contains("<RsiObject ObjTypeId=\"18\" ObjType=\"Stop\" ObjId=\"Stop_1\">"));
-        assert!(r.contains("<Input InIdx=\"0\" OutObjId=\"RSI\" OutIdx=\"6\" />"), "Stop fed by Ethernet output 7 (MoveStop)");
+        assert!(
+            r.contains("<Input InIdx=\"0\" OutObjId=\"RSI\" OutIdx=\"6\" />"),
+            "Stop fed by Ethernet output 7 (MoveStop)"
+        );
         assert!(r.contains("<Parameter Name=\"Mode\" ParamId=\"0\" ParamValue=\"4\" />"), "ExitMoveCorr");
         assert!(r.contains("<Parameter Name=\"Precision\" ParamId=\"7\" ParamValue=\"4\" />"));
         assert!(r.contains("<Parameter Name=\"Timeout\" ParamId=\"0\" ParamValue=\"100\" />"));
@@ -59,7 +62,9 @@ fn axis_correction_limits_are_the_range_widths() {
         for i in 0..6 {
             let width = (l.position_max[i] - l.position_min[i]).to_degrees().round();
             let a = i + 1;
-            for (name, want) in [(format!("LowerLimA{a}"), -width), (format!("UpperLimA{a}"), width), (format!("MaxA{a}"), width)] {
+            for (name, want) in
+                [(format!("LowerLimA{a}"), -width), (format!("UpperLimA{a}"), width), (format!("MaxA{a}"), width)]
+            {
                 let got = param_values(r, &name);
                 assert_eq!(got.len(), 2, "{ctx}: {name} must be set in <RsiObjects> and <Constructs>, got {got:?}");
                 assert!(got.iter().all(|v| *v == want), "{ctx}: {name} is {got:?}, expected {want}");

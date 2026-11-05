@@ -77,7 +77,9 @@ impl SimConfig {
         for i in 0..6 {
             let (lo, hi, mon) = (self.axiscorr_lower_deg[i], self.axiscorr_upper_deg[i], self.axiscorrmon_deg[i]);
             if !lo.is_finite() || !hi.is_finite() || !mon.is_finite() {
-                return Err(Error::Config(format!("axis {i}: axiscorr_lower_deg/axiscorr_upper_deg/axiscorrmon_deg must be finite")));
+                return Err(Error::Config(format!(
+                    "axis {i}: axiscorr_lower_deg/axiscorr_upper_deg/axiscorrmon_deg must be finite"
+                )));
             }
             if lo > hi {
                 return Err(Error::Config(format!("axis {i}: axiscorr_lower_deg must not exceed axiscorr_upper_deg")));
@@ -154,7 +156,13 @@ impl ControllerSim {
         cfg.validate()?;
         let schema = Schema::compile(&cfg.ethernet)?;
         let socket = UdpSocket::bind(cfg.bind)?;
-        Ok(ControllerSim { cfg, schema, socket, status: Arc::new(Mutex::new(SimStatus::default())), stop: Arc::new(AtomicBool::new(false)) })
+        Ok(ControllerSim {
+            cfg,
+            schema,
+            socket,
+            status: Arc::new(Mutex::new(SimStatus::default())),
+            stop: Arc::new(AtomicBool::new(false)),
+        })
     }
 
     pub fn local_addr(&self) -> Result<SocketAddr> {
@@ -230,11 +238,33 @@ impl ControllerSim {
         let mut next = Instant::now();
         loop {
             if self.stop.load(Ordering::Relaxed) {
-                self.publish(cycles, replies, late, ipoc, setpoint, q_actual, last_ak, clamped, overruns, Some(SimExit::Shutdown));
+                self.publish(
+                    cycles,
+                    replies,
+                    late,
+                    ipoc,
+                    setpoint,
+                    q_actual,
+                    last_ak,
+                    clamped,
+                    overruns,
+                    Some(SimExit::Shutdown),
+                );
                 return Ok(SimExit::Shutdown);
             }
             if cfg.max_cycles.is_some_and(|m| cycles >= m) {
-                self.publish(cycles, replies, late, ipoc, setpoint, q_actual, last_ak, clamped, overruns, Some(SimExit::MaxCycles));
+                self.publish(
+                    cycles,
+                    replies,
+                    late,
+                    ipoc,
+                    setpoint,
+                    q_actual,
+                    last_ak,
+                    clamped,
+                    overruns,
+                    Some(SimExit::MaxCycles),
+                );
                 return Ok(SimExit::MaxCycles);
             }
             tele.ipoc = ipoc;
@@ -304,20 +334,53 @@ impl ControllerSim {
                 if let Some(slot) = stop_slot {
                     let stop_now = sen.slots[slot] >= 0.5;
                     if stop_now && !stop_prev {
-                        self.publish(cycles, replies, late, ipoc, setpoint, q_actual, last_ak, clamped, overruns, Some(SimExit::Stopped));
+                        self.publish(
+                            cycles,
+                            replies,
+                            late,
+                            ipoc,
+                            setpoint,
+                            q_actual,
+                            last_ak,
+                            clamped,
+                            overruns,
+                            Some(SimExit::Stopped),
+                        );
                         return Ok(SimExit::Stopped);
                     }
                     stop_prev = stop_now;
                 }
                 if sen.estr.starts_with("Error:") {
-                    self.publish(cycles, replies, late, ipoc, setpoint, q_actual, last_ak, clamped, overruns, Some(SimExit::EStrError));
+                    self.publish(
+                        cycles,
+                        replies,
+                        late,
+                        ipoc,
+                        setpoint,
+                        q_actual,
+                        last_ak,
+                        clamped,
+                        overruns,
+                        Some(SimExit::EStrError),
+                    );
                     return Ok(SimExit::EStrError);
                 }
             } else if !self.schema.onlysend {
                 late += 1;
                 stop_prev = false; // HOLDON="0" resets the stop channel
                 if late > cfg.timeout {
-                    self.publish(cycles, replies, late, ipoc, setpoint, q_actual, last_ak, clamped, overruns, Some(SimExit::RsiBad { late }));
+                    self.publish(
+                        cycles,
+                        replies,
+                        late,
+                        ipoc,
+                        setpoint,
+                        q_actual,
+                        last_ak,
+                        clamped,
+                        overruns,
+                        Some(SimExit::RsiBad { late }),
+                    );
                     return Ok(SimExit::RsiBad { late });
                 }
             }
@@ -328,7 +391,18 @@ impl ControllerSim {
                     clamped += 1;
                 }
                 if c.abs() > cfg.axiscorrmon_deg[i] {
-                    self.publish(cycles, replies, late, ipoc, setpoint, q_actual, last_ak, clamped, overruns, Some(SimExit::CorrMonExceeded { axis: i }));
+                    self.publish(
+                        cycles,
+                        replies,
+                        late,
+                        ipoc,
+                        setpoint,
+                        q_actual,
+                        last_ak,
+                        clamped,
+                        overruns,
+                        Some(SimExit::CorrMonExceeded { axis: i }),
+                    );
                     return Ok(SimExit::CorrMonExceeded { axis: i });
                 }
                 setpoint[i] = cfg.q_start_deg[i] + c;
@@ -452,7 +526,14 @@ mod tests {
             let schema = Schema::compile(&EthernetConfig::from_str(SHIPPED).unwrap()).unwrap();
             let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
             sock.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
-            Pc { sock, parser: Parser::new(&schema), writer: Writer::new(&schema), tele: RobotTelegram::default(), buf: vec![0; 65536], out: Vec::new() }
+            Pc {
+                sock,
+                parser: Parser::new(&schema),
+                writer: Writer::new(&schema),
+                tele: RobotTelegram::default(),
+                buf: vec![0; 65536],
+                out: Vec::new(),
+            }
         }
 
         fn sim_config(&self, cycle_ms: u64) -> SimConfig {
@@ -493,7 +574,11 @@ mod tests {
         let mut pc = Pc::new();
         let mut h = ControllerSim::spawn(pc.sim_config(10)).unwrap();
         let mut received: u64 = 1;
-        let first_ipoc = { let from = pc.recv().unwrap(); pc.reply(from, |s| s.ak[0] = 1.0); pc.tele.ipoc };
+        let first_ipoc = {
+            let from = pc.recv().unwrap();
+            pc.reply(from, |s| s.ak[0] = 1.0);
+            pc.tele.ipoc
+        };
         for _ in 0..20 {
             let from = pc.recv().unwrap();
             pc.reply(from, |s| s.ak[0] = 1.0);

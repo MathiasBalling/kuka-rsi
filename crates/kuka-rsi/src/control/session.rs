@@ -4,9 +4,9 @@ use std::time::Duration;
 
 use arrayvec::{ArrayString, ArrayVec};
 
-use super::{Blend, ClampCounts, Command, Interpolator, Limiter, Segment, MAX_QUEUE};
+use super::{Blend, ClampCounts, Command, Interpolator, Limiter, MAX_QUEUE, Segment};
 use crate::config::Limits;
-use crate::state::{deg2rad6, rad2deg6, RobotState, SessionState};
+use crate::state::{RobotState, SessionState, deg2rad6, rad2deg6};
 use crate::stats::{ClampKind, Event};
 use crate::telegram::{RobotTelegram, SensorTelegram};
 use crate::{Error, Result};
@@ -238,7 +238,13 @@ impl Session {
     }
 
     /// One chunk of a `stream` call, accepted whole or rejected whole.
-    fn push_stream(&mut self, points: &[[f64; 6]], cycles_per_point: f64, replace: bool, batch_remaining: u32) -> Result<()> {
+    fn push_stream(
+        &mut self,
+        points: &[[f64; 6]],
+        cycles_per_point: f64,
+        replace: bool,
+        batch_remaining: u32,
+    ) -> Result<()> {
         if self.frozen.is_some() {
             return Err(Error::Faulted);
         }
@@ -282,7 +288,12 @@ impl Session {
         };
         let c = self.limiter.counts();
         let p = self.prev_counts;
-        let hits = [c.position > p.position, c.velocity > p.velocity, c.acceleration > p.acceleration, c.correction > p.correction];
+        let hits = [
+            c.position > p.position,
+            c.velocity > p.velocity,
+            c.acceleration > p.acceleration,
+            c.correction > p.correction,
+        ];
         let kinds = [ClampKind::Position, ClampKind::Velocity, ClampKind::Acceleration, ClampKind::Correction];
         for i in 0..4 {
             if hits[i] {
@@ -341,7 +352,7 @@ mod tests {
     use super::*;
     use crate::config::Limits;
     use crate::control::{MAX_CHUNK, MAX_QUEUE};
-    use crate::state::{deg2rad6, RobotState};
+    use crate::state::{RobotState, deg2rad6};
     use crate::telegram::{RobotTelegram, SensorTelegram};
     use arrayvec::{ArrayString, ArrayVec};
     use std::time::Duration;
@@ -353,7 +364,13 @@ mod tests {
     }
 
     fn state(t: &RobotTelegram) -> RobotState {
-        RobotState { q: deg2rad6(&t.aipos), q_setpoint: deg2rad6(&t.aspos), speed_override: 1.0, program_running: true, ..Default::default() }
+        RobotState {
+            q: deg2rad6(&t.aipos),
+            q_setpoint: deg2rad6(&t.aspos),
+            speed_override: 1.0,
+            program_running: true,
+            ..Default::default()
+        }
     }
 
     fn session() -> Session {
@@ -505,7 +522,14 @@ mod tests {
             points.push(q);
         }
         for _ in 0..(MAX_QUEUE / MAX_CHUNK) {
-            s.apply(Command::Stream { points: points.clone(), cycles_per_point: 1.0, replace: false, batch_remaining: 0, first: true }).unwrap();
+            s.apply(Command::Stream {
+                points: points.clone(),
+                cycles_per_point: 1.0,
+                replace: false,
+                batch_remaining: 0,
+                first: true,
+            })
+            .unwrap();
         }
         assert!(matches!(s.apply(stream(q, 1.0, false)), Err(Error::QueueFull)));
     }
@@ -641,15 +665,38 @@ mod tests {
             full.push(q);
         }
         for _ in 0..15 {
-            s.apply(Command::Stream { points: full.clone(), cycles_per_point: 1.0, replace: false, batch_remaining: 0, first: true }).unwrap();
+            s.apply(Command::Stream {
+                points: full.clone(),
+                cycles_per_point: 1.0,
+                replace: false,
+                batch_remaining: 0,
+                first: true,
+            })
+            .unwrap();
         }
         let mut partial = ArrayVec::new();
         for _ in 0..40 {
             partial.push(q);
         }
-        s.apply(Command::Stream { points: partial, cycles_per_point: 1.0, replace: false, batch_remaining: 0, first: true }).unwrap();
+        s.apply(Command::Stream {
+            points: partial,
+            cycles_per_point: 1.0,
+            replace: false,
+            batch_remaining: 0,
+            first: true,
+        })
+        .unwrap();
         assert_eq!(s.queue_len(), 1000);
-        assert!(matches!(s.apply(Command::Stream { points: full.clone(), cycles_per_point: 1.0, replace: false, batch_remaining: 0, first: true }), Err(Error::QueueFull)));
+        assert!(matches!(
+            s.apply(Command::Stream {
+                points: full.clone(),
+                cycles_per_point: 1.0,
+                replace: false,
+                batch_remaining: 0,
+                first: true
+            }),
+            Err(Error::QueueFull)
+        ));
         assert_eq!(s.queue_len(), 1000);
     }
 

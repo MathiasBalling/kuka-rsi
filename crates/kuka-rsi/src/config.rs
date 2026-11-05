@@ -46,7 +46,15 @@ pub struct EthernetConfig {
 
 /// Keywords the driver understands on the robot-to-PC side (RSI manual 7.5.5).
 pub const SEND_KEYWORDS: &[&str] = &[
-    "DEF_RIst", "DEF_RSol", "DEF_AIPos", "DEF_ASPos", "DEF_EIPos", "DEF_ESPos", "DEF_MACur", "DEF_MECur", "DEF_Delay",
+    "DEF_RIst",
+    "DEF_RSol",
+    "DEF_AIPos",
+    "DEF_ASPos",
+    "DEF_EIPos",
+    "DEF_ESPos",
+    "DEF_MACur",
+    "DEF_MECur",
+    "DEF_Delay",
 ];
 /// Keywords the driver understands on the PC-to-robot side (RSI manual 7.5.6).
 pub const RECEIVE_KEYWORDS: &[&str] = &["DEF_EStr"];
@@ -114,7 +122,11 @@ impl RawElement {
         let indx = if self.indx.trim().eq_ignore_ascii_case("INTERNAL") {
             Index::Internal
         } else {
-            let n: u8 = self.indx.trim().parse().map_err(|_| cfg_err(format!("{section} element {:?}: bad INDX {:?}", self.tag, self.indx)))?;
+            let n: u8 = self
+                .indx
+                .trim()
+                .parse()
+                .map_err(|_| cfg_err(format!("{section} element {:?}: bad INDX {:?}", self.tag, self.indx)))?;
             if !(1..=64).contains(&n) {
                 return Err(cfg_err(format!("{section} element {:?}: INDX {n} outside 1..=64", self.tag)));
             }
@@ -124,7 +136,9 @@ impl RawElement {
             None => None,
             Some("0") => Some(false),
             Some("1") => Some(true),
-            Some(other) => return Err(cfg_err(format!("{section} element {:?}: HOLDON must be 0 or 1, got {other:?}", self.tag))),
+            Some(other) => {
+                return Err(cfg_err(format!("{section} element {:?}: HOLDON must be 0 or 1, got {other:?}", self.tag)));
+            }
         };
         Ok(Element { tag: self.tag.trim().to_string(), ty, indx, holdon })
     }
@@ -133,8 +147,14 @@ impl RawElement {
 impl EthernetConfig {
     /// Parse and validate the XML text of an `RSI_EthernetConfig` file.
     pub fn from_str(xml: &str) -> Result<Self> {
-        let raw: RawRoot = quick_xml::de::from_str(xml).map_err(|e| cfg_err(format!("cannot parse Ethernet config XML: {e}")))?;
-        let port: u16 = raw.config.port.trim().parse().map_err(|_| cfg_err(format!("PORT {:?} is not a number", raw.config.port)))?;
+        let raw: RawRoot =
+            quick_xml::de::from_str(xml).map_err(|e| cfg_err(format!("cannot parse Ethernet config XML: {e}")))?;
+        let port: u16 = raw
+            .config
+            .port
+            .trim()
+            .parse()
+            .map_err(|_| cfg_err(format!("PORT {:?} is not a number", raw.config.port)))?;
         if !(1..=65534).contains(&port) {
             return Err(cfg_err("PORT must be 1..=65534"));
         }
@@ -145,7 +165,8 @@ impl EthernetConfig {
             Some(s) => return Err(cfg_err(format!("ONLYSEND must be TRUE or FALSE, got {s:?}"))),
         };
         let send = raw.send.elements.element.into_iter().map(|e| e.convert("SEND")).collect::<Result<Vec<_>>>()?;
-        let receive = raw.receive.elements.element.into_iter().map(|e| e.convert("RECEIVE")).collect::<Result<Vec<_>>>()?;
+        let receive =
+            raw.receive.elements.element.into_iter().map(|e| e.convert("RECEIVE")).collect::<Result<Vec<_>>>()?;
         let cfg = EthernetConfig {
             ip_number: raw.config.ip_number.trim().to_string(),
             port,
@@ -161,7 +182,8 @@ impl EthernetConfig {
     /// Read and validate an `RSI_EthernetConfig` file.
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
-        let text = std::fs::read_to_string(path).map_err(|e| cfg_err(format!("cannot read {}: {e}", path.display())))?;
+        let text =
+            std::fs::read_to_string(path).map_err(|e| cfg_err(format!("cannot read {}: {e}", path.display())))?;
         Self::from_str(&text)
     }
 
@@ -209,7 +231,10 @@ impl EthernetConfig {
             match e.indx {
                 Index::Internal => {
                     if e.tag.to_ascii_uppercase().starts_with("DEF_TECH") {
-                        return Err(cfg_err(format!("{section}: DEF_Tech keywords are not supported by this driver ({})", e.tag)));
+                        return Err(cfg_err(format!(
+                            "{section}: DEF_Tech keywords are not supported by this driver ({})",
+                            e.tag
+                        )));
                     }
                     if !keywords.iter().any(|k| k.eq_ignore_ascii_case(&e.tag)) {
                         return Err(cfg_err(format!("{section}: unknown INTERNAL keyword {:?}", e.tag)));
@@ -217,7 +242,10 @@ impl EthernetConfig {
                 }
                 Index::Channel(n) => {
                     if e.ty == ElementType::String {
-                        return Err(cfg_err(format!("{section} element {:?}: TYPE STRING is only valid for the DEF_EStr keyword", e.tag)));
+                        return Err(cfg_err(format!(
+                            "{section} element {:?}: TYPE STRING is only valid for the DEF_EStr keyword",
+                            e.tag
+                        )));
                     }
                     if seen[n as usize] {
                         return Err(cfg_err(format!("{section}: INDX {n} used twice")));
@@ -291,7 +319,9 @@ impl Limits {
     pub fn validate(&self) -> Result<()> {
         for i in 0..6 {
             let n = AXIS_NAMES[i];
-            if !(self.position_min[i].is_finite() && self.position_max[i].is_finite()) || self.position_min[i] >= self.position_max[i] {
+            if !(self.position_min[i].is_finite() && self.position_max[i].is_finite())
+                || self.position_min[i] >= self.position_max[i]
+            {
                 return Err(cfg_err(format!("limits: position_min must be below position_max for {n}")));
             }
             if !(self.max_velocity[i] > 0.0) || !self.max_velocity[i].is_finite() {
@@ -424,9 +454,15 @@ mod tests {
         assert_eq!(c.receive.len(), 8);
         assert_eq!(c.send[0].tag, "DEF_RIst");
         assert_eq!(c.send[0].indx, Index::Internal);
-        assert_eq!(c.send[5], Element { tag: "GearTorque.A1".into(), ty: ElementType::Double, indx: Index::Channel(1), holdon: None });
+        assert_eq!(
+            c.send[5],
+            Element { tag: "GearTorque.A1".into(), ty: ElementType::Double, indx: Index::Channel(1), holdon: None }
+        );
         assert_eq!(c.receive[0].holdon, Some(true));
-        assert_eq!(c.receive[6], Element { tag: "MoveStop".into(), ty: ElementType::Bool, indx: Index::Channel(7), holdon: Some(false) });
+        assert_eq!(
+            c.receive[6],
+            Element { tag: "MoveStop".into(), ty: ElementType::Bool, indx: Index::Channel(7), holdon: Some(false) }
+        );
         assert_eq!(EthernetConfig::channels(&c.send), 8);
         assert_eq!(EthernetConfig::channels(&c.receive), 7);
     }
@@ -490,7 +526,12 @@ mod tests {
     #[test]
     fn onlysend_configs_are_exempt_from_the_absolute_mode_rules() {
         let ak_reset = AK.replace("HOLDON=\"1\"", "HOLDON=\"0\"");
-        let c = EthernetConfig::from_str(&config(true, "<ELEMENT TAG=\"DEF_RIst\" TYPE=\"DOUBLE\" INDX=\"INTERNAL\" />", &ak_reset)).unwrap();
+        let c = EthernetConfig::from_str(&config(
+            true,
+            "<ELEMENT TAG=\"DEF_RIst\" TYPE=\"DOUBLE\" INDX=\"INTERNAL\" />",
+            &ak_reset,
+        ))
+        .unwrap();
         assert!(c.onlysend);
         EthernetConfig::from_str(&config(true, "", "")).unwrap();
     }
@@ -604,7 +645,11 @@ mod tests {
         assert!(c.rt_priority);
         assert_eq!(c.stop_channel, None);
         assert_eq!(c.bind_addr().unwrap().to_string(), "192.168.10.10:49152");
-        let c = c.bind("127.0.0.1:0".parse().unwrap()).stop_channel("MoveStop").link_timeout(Duration::from_millis(250)).rt_priority(false);
+        let c = c
+            .bind("127.0.0.1:0".parse().unwrap())
+            .stop_channel("MoveStop")
+            .link_timeout(Duration::from_millis(250))
+            .rt_priority(false);
         assert_eq!(c.bind_addr().unwrap().to_string(), "127.0.0.1:0");
         assert_eq!(c.stop_channel.as_deref(), Some("MoveStop"));
         assert!(!c.rt_priority);

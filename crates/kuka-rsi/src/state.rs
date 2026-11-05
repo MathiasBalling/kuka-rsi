@@ -170,7 +170,16 @@ mod tests {
 
     #[test]
     fn robot_state_round_trips_through_json() {
-        let st = RobotState { t: 1.5, cycle: 9, ipoc: 4004, session: SessionState::Active, q: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6], program_running: true, speed_override: 0.5, ..Default::default() };
+        let st = RobotState {
+            t: 1.5,
+            cycle: 9,
+            ipoc: 4004,
+            session: SessionState::Active,
+            q: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+            program_running: true,
+            speed_override: 0.5,
+            ..Default::default()
+        };
         let json = serde_json::to_string(&st).unwrap();
         let back: RobotState = serde_json::from_str(&json).unwrap();
         assert_eq!(back, st);

@@ -362,7 +362,13 @@ mod tests {
     fn catching_up_to_a_slow_target_does_not_ring() {
         let mut lim = with_accel();
         let (qs, ts) = track(&mut lim, 0.1, 0.0005, 400); // target starts 0.1 rad ahead, moves at 0.125 rad/s
-        assert!(reversals(&qs) <= 1, "{} reversals; qs[..40] = {:?}, ts[..40] = {:?}", reversals(&qs), &qs[..40], &ts[..40]);
+        assert!(
+            reversals(&qs) <= 1,
+            "{} reversals; qs[..40] = {:?}, ts[..40] = {:?}",
+            reversals(&qs),
+            &qs[..40],
+            &ts[..40]
+        );
         assert!(
             (ts[399] - qs[399]).abs() < 1e-6,
             "not tracking: {} vs {}; qs[..40] = {:?}, ts[..40] = {:?}",

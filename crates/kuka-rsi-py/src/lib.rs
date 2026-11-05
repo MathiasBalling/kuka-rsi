@@ -282,7 +282,13 @@ impl PyControllerSim {
     }
 
     #[pyo3(signature = (_t=None, _v=None, _tb=None))]
-    fn __exit__(&mut self, py: Python<'_>, _t: Option<Bound<'_, PyAny>>, _v: Option<Bound<'_, PyAny>>, _tb: Option<Bound<'_, PyAny>>) -> PyResult<bool> {
+    fn __exit__(
+        &mut self,
+        py: Python<'_>,
+        _t: Option<Bound<'_, PyAny>>,
+        _v: Option<Bound<'_, PyAny>>,
+        _tb: Option<Bound<'_, PyAny>>,
+    ) -> PyResult<bool> {
         self.stop(py)?;
         Ok(false)
     }
@@ -514,7 +520,10 @@ impl PyDriver {
         if let Some(s) = stop_channel {
             cfg = cfg.stop_channel(s);
         }
-        cfg = cfg.link_timeout(secs(link_timeout, "link_timeout")?).rt_priority(rt_priority).cycle(secs(cycle_ms / 1000.0, "cycle_ms")?);
+        cfg = cfg
+            .link_timeout(secs(link_timeout, "link_timeout")?)
+            .rt_priority(rt_priority)
+            .cycle(secs(cycle_ms / 1000.0, "cycle_ms")?);
         let wait = secs(wait, "wait")?;
         Ok(PyDriver { inner: Some(Driver::spawn(cfg).map_err(to_py)?), wait })
     }

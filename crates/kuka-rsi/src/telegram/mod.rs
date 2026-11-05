@@ -6,5 +6,5 @@ pub mod schema;
 pub mod write;
 
 pub use parse::{ParseError, Parser, RobotTelegram};
-pub use schema::{Attr, Keyword, RobElement, Schema, SenElement, MAX_SLOTS};
+pub use schema::{Attr, Keyword, MAX_SLOTS, RobElement, Schema, SenElement};
 pub use write::{SensorTelegram, Writer};

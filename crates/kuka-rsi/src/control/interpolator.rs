@@ -33,7 +33,16 @@ pub struct Interpolator {
 impl Interpolator {
     pub fn new(q0: [f64; 6]) -> Interpolator {
         let filler = Segment { q_end: q0, cycles: 1.0, blend: Blend::Linear };
-        Interpolator { ring: vec![filler; MAX_QUEUE], head: 0, len: 0, seg_start: q0, current: q0, progress: 0.0, starved: 0, armed: false }
+        Interpolator {
+            ring: vec![filler; MAX_QUEUE],
+            head: 0,
+            len: 0,
+            seg_start: q0,
+            current: q0,
+            progress: 0.0,
+            starved: 0,
+            armed: false,
+        }
     }
 
     pub fn reset(&mut self, q0: [f64; 6]) {

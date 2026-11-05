@@ -4,7 +4,7 @@ use std::io::Write as _;
 
 use arrayvec::ArrayString;
 
-use super::schema::{Schema, SenElement, MAX_SLOTS};
+use super::schema::{MAX_SLOTS, Schema, SenElement};
 use crate::config::ElementType;
 
 /// One PC-to-robot telegram in wire units (degrees, millimetres).
@@ -20,7 +20,14 @@ pub struct SensorTelegram {
 
 impl Default for SensorTelegram {
     fn default() -> Self {
-        SensorTelegram { ipoc: 0, ak: [0.0; 6], rkorr: [0.0; 6], ek: [0.0; 6], estr: ArrayString::new(), slots: [0.0; MAX_SLOTS] }
+        SensorTelegram {
+            ipoc: 0,
+            ak: [0.0; 6],
+            rkorr: [0.0; 6],
+            ek: [0.0; 6],
+            estr: ArrayString::new(),
+            slots: [0.0; MAX_SLOTS],
+        }
     }
 }
 

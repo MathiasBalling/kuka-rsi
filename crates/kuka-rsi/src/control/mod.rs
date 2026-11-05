@@ -6,6 +6,6 @@ pub mod limiter;
 pub mod session;
 
 pub use command::{Command, MAX_CHUNK};
-pub use interpolator::{Blend, Interpolator, Segment, MAX_QUEUE};
+pub use interpolator::{Blend, Interpolator, MAX_QUEUE, Segment};
 pub use limiter::{ClampCounts, Limiter};
-pub use session::{Session, MESSAGE_CYCLES};
+pub use session::{MESSAGE_CYCLES, Session};

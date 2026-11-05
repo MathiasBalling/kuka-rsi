@@ -1,11 +1,11 @@
 use std::time::{Duration, Instant};
 
+use kuka_rsi::Error;
 use kuka_rsi::config::{DriverConfig, EthernetConfig, Limits};
 use kuka_rsi::driver::Driver;
 use kuka_rsi::sim::{ControllerSim, SimConfig, SimExit, SimHandle, SimStatus};
 use kuka_rsi::state::{RobotState, SessionState};
 use kuka_rsi::stats::Event;
-use kuka_rsi::Error;
 
 const SHIPPED: &str = include_str!("../controller/kuka_rsi_ethernet.xml");
 
@@ -237,7 +237,10 @@ fn stream_with_non_integer_cycle_spacing_keeps_rate() {
     let mut log = Vec::new();
     drv.drain_log(&mut log);
     let moved = log.iter().find(|s| (s.q_command[0] - start[0]).abs() > 1e-9).expect("the command never moved");
-    let reached = log.iter().find(|s| (s.q_command[0] - last[0]).abs() < 1e-9).expect("the command never reached the last target");
+    let reached = log
+        .iter()
+        .find(|s| (s.q_command[0] - last[0]).abs() < 1e-9)
+        .expect("the command never reached the last target");
     let played = reached.cycle - moved.cycle + 1;
     assert!((88..=92).contains(&played), "60 points x 1.5 cycles should play in 90 cycles, took {played}");
     assert!((settled(&drv, &sim).q_setpoint_deg[0] - last[0].to_degrees()).abs() < 1e-6);
@@ -341,7 +344,8 @@ fn first_move(log: &[RobotState], axis: usize, from: f64) -> Option<usize> {
 /// Two ramps, `(axis, final value)`, each on its own axis from `q0`, were played one after the
 /// other: the axis that moved first reached its final value before the other axis moved.
 fn assert_ramps_in_sequence(log: &[RobotState], q0: [f64; 6], ramps: [(usize, f64); 2]) {
-    let starts = ramps.map(|(axis, _)| first_move(log, axis, q0[axis]).unwrap_or_else(|| panic!("A{} never moved", axis + 1)));
+    let starts =
+        ramps.map(|(axis, _)| first_move(log, axis, q0[axis]).unwrap_or_else(|| panic!("A{} never moved", axis + 1)));
     let (first, second) = if starts[0] < starts[1] { (0, 1) } else { (1, 0) };
     let (axis, end) = ramps[first];
     let done = log[..starts[second]].iter().any(|s| (s.q_command[axis] - end).abs() < 1e-9);

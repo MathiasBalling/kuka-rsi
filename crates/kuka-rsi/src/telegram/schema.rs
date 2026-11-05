@@ -153,7 +153,8 @@ impl Schema {
         for e in &cfg.send {
             match e.indx {
                 Index::Internal => {
-                    let kw = Keyword::from_tag(&e.tag).ok_or_else(|| Error::Config(format!("unknown SEND keyword {:?}", e.tag)))?;
+                    let kw = Keyword::from_tag(&e.tag)
+                        .ok_or_else(|| Error::Config(format!("unknown SEND keyword {:?}", e.tag)))?;
                     rob.push(RobElement::Keyword(kw));
                 }
                 Index::Channel(_) => {
@@ -189,8 +190,13 @@ impl Schema {
                     let (name, attr) = split_tag(&e.tag);
                     let first_of_group = match attr {
                         None => true,
-                        Some(_) => !sen.iter().any(|s| matches!(s, SenElement::Attrs { tag, .. } if tag == name)
-                            || matches!((s, name), (SenElement::Ak, "AK") | (SenElement::RKorr, "RKorr") | (SenElement::Ek, "EK"))),
+                        Some(_) => !sen.iter().any(|s| {
+                            matches!(s, SenElement::Attrs { tag, .. } if tag == name)
+                                || matches!(
+                                    (s, name),
+                                    (SenElement::Ak, "AK") | (SenElement::RKorr, "RKorr") | (SenElement::Ek, "EK")
+                                )
+                        }),
                     };
                     if first_of_group {
                         let (tag, attrs, text_ty) = sen_groups.next().expect("group count matches");
@@ -221,7 +227,9 @@ impl Schema {
     /// Slot of a robot-to-PC user element (`attr` is `None` for text elements).
     pub fn rob_slot(&self, tag: &str, attr: Option<&str>) -> Option<usize> {
         self.rob.iter().find_map(|e| match (e, attr) {
-            (RobElement::Attrs { tag: t, attrs }, Some(a)) if t == tag => attrs.iter().find(|x| x.name == a).map(|x| x.slot),
+            (RobElement::Attrs { tag: t, attrs }, Some(a)) if t == tag => {
+                attrs.iter().find(|x| x.name == a).map(|x| x.slot)
+            }
             (RobElement::Text { tag: t, slot, .. }, None) if t == tag => Some(*slot),
             _ => None,
         })
@@ -230,7 +238,9 @@ impl Schema {
     /// Slot of a PC-to-robot user element (`attr` is `None` for text elements).
     pub fn sen_slot(&self, tag: &str, attr: Option<&str>) -> Option<usize> {
         self.sen.iter().find_map(|e| match (e, attr) {
-            (SenElement::Attrs { tag: t, attrs }, Some(a)) if t == tag => attrs.iter().find(|x| x.name == a).map(|x| x.slot),
+            (SenElement::Attrs { tag: t, attrs }, Some(a)) if t == tag => {
+                attrs.iter().find(|x| x.name == a).map(|x| x.slot)
+            }
             (SenElement::Text { tag: t, slot, .. }, None) if t == tag => Some(*slot),
             _ => None,
         })
@@ -314,7 +324,9 @@ mod tests {
         let s = Schema::compile(&cfg(&receive, POSITIONS)).unwrap();
         assert!(matches!(s.sen[0], SenElement::Ak));
         assert!(matches!(s.sen[1], SenElement::RKorr));
-        assert!(matches!(&s.sen[2], SenElement::Attrs { tag, attrs } if tag == "Digout" && attrs.len() == 2 && attrs[1].slot == 13));
+        assert!(
+            matches!(&s.sen[2], SenElement::Attrs { tag, attrs } if tag == "Digout" && attrs.len() == 2 && attrs[1].slot == 13)
+        );
         assert!(matches!(&s.sen[3], SenElement::Text { tag, slot: 14, ty: ElementType::Long } if tag == "DiO"));
         assert_eq!(s.sen_slot("Digout", Some("o2")), Some(13));
     }
@@ -338,7 +350,8 @@ mod tests {
 
     #[test]
     fn rejects_partial_ak_group() {
-        let receive = "<ELEMENT TAG=\"AK.A1\" TYPE=\"DOUBLE\" INDX=\"1\" /><ELEMENT TAG=\"AK.A2\" TYPE=\"DOUBLE\" INDX=\"2\" />";
+        let receive =
+            "<ELEMENT TAG=\"AK.A1\" TYPE=\"DOUBLE\" INDX=\"1\" /><ELEMENT TAG=\"AK.A2\" TYPE=\"DOUBLE\" INDX=\"2\" />";
         let xml = format!(
             "<ROOT><CONFIG><IP_NUMBER>127.0.0.1</IP_NUMBER><PORT>49152</PORT><SENTYPE>T</SENTYPE><ONLYSEND>TRUE</ONLYSEND></CONFIG>\
              <SEND><ELEMENTS><ELEMENT TAG=\"DEF_AIPos\" TYPE=\"DOUBLE\" INDX=\"INTERNAL\" /></ELEMENTS></SEND><RECEIVE><ELEMENTS>{receive}</ELEMENTS></RECEIVE></ROOT>"

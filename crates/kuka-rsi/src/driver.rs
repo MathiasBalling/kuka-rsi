@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -11,7 +11,7 @@ use arrayvec::{ArrayString, ArrayVec};
 use crossbeam_queue::ArrayQueue;
 
 use crate::config::{DriverConfig, Limits};
-use crate::control::{Command, Session, MAX_CHUNK, MAX_QUEUE};
+use crate::control::{Command, MAX_CHUNK, MAX_QUEUE, Session};
 use crate::link::UdpLink;
 use crate::state::{RobotState, SessionState, StateMap};
 use crate::stats::{Event, Stats};
@@ -72,7 +72,8 @@ pub(crate) fn raise_priority() -> bool {
     #[cfg(target_os = "linux")]
     {
         use thread_priority::{
-            set_thread_priority_and_policy, thread_native_id, RealtimeThreadSchedulePolicy, ThreadPriority, ThreadPriorityValue, ThreadSchedulePolicy,
+            RealtimeThreadSchedulePolicy, ThreadPriority, ThreadPriorityValue, ThreadSchedulePolicy,
+            set_thread_priority_and_policy, thread_native_id,
         };
         let Ok(p) = ThreadPriorityValue::try_from(80u8) else { return false };
         set_thread_priority_and_policy(
@@ -213,7 +214,8 @@ impl Rt {
     /// session drain the command queue. Inside a session, commands wait for the next telegram: a
     /// silence shorter than the link timeout must not reject them.
     fn no_telegram(&mut self) {
-        if self.session.state() == SessionState::Active && self.last_rx.is_some_and(|t| t.elapsed() > self.link_timeout) {
+        if self.session.state() == SessionState::Active && self.last_rx.is_some_and(|t| t.elapsed() > self.link_timeout)
+        {
             self.lose_link();
         }
         if self.session.state() != SessionState::Active {
@@ -503,11 +505,9 @@ impl Driver {
         }
         let schema = Schema::compile(&cfg.ethernet)?;
         let stop_slot = match &cfg.stop_channel {
-            Some(tag) => Some(
-                schema
-                    .sen_slot(tag, None)
-                    .ok_or_else(|| Error::Config(format!("stop channel {tag:?} is not a text element of the RECEIVE section")))?,
-            ),
+            Some(tag) => Some(schema.sen_slot(tag, None).ok_or_else(|| {
+                Error::Config(format!("stop channel {tag:?} is not a text element of the RECEIVE section"))
+            })?),
             None => None,
         };
         let addr = cfg.bind_addr()?;
@@ -570,7 +570,10 @@ impl Driver {
         let history = Arc::new(Mutex::new(VecDeque::with_capacity(EVENT_HISTORY)));
         let shared_mon = shared.clone();
         let history_mon = history.clone();
-        let monitor = match std::thread::Builder::new().name("kuka-rsi-monitor".into()).spawn(move || run_monitor(shared_mon, history_mon)) {
+        let monitor = match std::thread::Builder::new()
+            .name("kuka-rsi-monitor".into())
+            .spawn(move || run_monitor(shared_mon, history_mon))
+        {
             Ok(m) => m,
             Err(e) => {
                 // No `Driver` owns the real-time thread yet: stop it here.
@@ -769,7 +772,13 @@ impl Driver {
             let mut arr: ArrayVec<[f64; 6], MAX_CHUNK> = ArrayVec::new();
             arr.extend(chunk.iter().copied());
             let batch_remaining = (points.len() - sent - chunk.len()) as u32;
-            let cmd = Command::Stream { points: arr, cycles_per_point: cycles, replace: replace && i == 0, batch_remaining, first: i == 0 };
+            let cmd = Command::Stream {
+                points: arr,
+                cycles_per_point: cycles,
+                replace: replace && i == 0,
+                batch_remaining,
+                first: i == 0,
+            };
             if let Err(e) = self.send(cmd) {
                 // Another caller filled the command queue or the driver closed: the points not
                 // pushed never reach the real-time thread.

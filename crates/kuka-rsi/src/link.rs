@@ -30,7 +30,8 @@ impl UdpLink {
         let domain = if addr.is_ipv4() { socket2::Domain::IPV4 } else { socket2::Domain::IPV6 };
         let sock = socket2::Socket::new(domain, socket2::Type::DGRAM, Some(socket2::Protocol::UDP))?;
         sock.set_reuse_address(false)?;
-        sock.bind(&addr.into()).map_err(|e| Error::Io(std::io::Error::new(e.kind(), format!("cannot bind UDP {addr}: {e}"))))?;
+        sock.bind(&addr.into())
+            .map_err(|e| Error::Io(std::io::Error::new(e.kind(), format!("cannot bind UDP {addr}: {e}"))))?;
         let socket: UdpSocket = sock.into();
         socket.set_read_timeout(Some(read_timeout))?;
         Ok(UdpLink { socket, peer: None, scratch: vec![0u8; 65536], foreign: 0, read_timeout })

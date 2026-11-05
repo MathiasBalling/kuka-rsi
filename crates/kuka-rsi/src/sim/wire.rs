@@ -91,7 +91,13 @@ enum Target {
     Slot(usize),
 }
 
-fn on_element(schema: &Schema, e: &BytesStart<'_>, depth: usize, out: &mut SensorTelegram, target: &mut Option<Target>) -> Result<(), ParseError> {
+fn on_element(
+    schema: &Schema,
+    e: &BytesStart<'_>,
+    depth: usize,
+    out: &mut SensorTelegram,
+    target: &mut Option<Target>,
+) -> Result<(), ParseError> {
     let qname = e.name();
     let name: &str = qname.as_ref();
     if depth == 0 {
@@ -322,9 +328,18 @@ mod tests {
     fn sen_parser_rejects_wrong_type_and_missing_ipoc() {
         let s = schema();
         let mut back = SensorTelegram::default();
-        assert!(matches!(parse_sen(&s, b"<Sen Type=\"Other\"><IPOC>1</IPOC></Sen>", &mut back), Err(ParseError::Sentype { .. })));
-        assert!(matches!(parse_sen(&s, b"<Sen Type=\"KukaRsi\"><EStr/></Sen>", &mut back), Err(ParseError::MissingIpoc)));
-        assert!(matches!(parse_sen(&s, b"<Rob Type=\"KUKA\"><IPOC>1</IPOC></Rob>", &mut back), Err(ParseError::Root(_))));
+        assert!(matches!(
+            parse_sen(&s, b"<Sen Type=\"Other\"><IPOC>1</IPOC></Sen>", &mut back),
+            Err(ParseError::Sentype { .. })
+        ));
+        assert!(matches!(
+            parse_sen(&s, b"<Sen Type=\"KukaRsi\"><EStr/></Sen>", &mut back),
+            Err(ParseError::MissingIpoc)
+        ));
+        assert!(matches!(
+            parse_sen(&s, b"<Rob Type=\"KUKA\"><IPOC>1</IPOC></Rob>", &mut back),
+            Err(ParseError::Root(_))
+        ));
         assert!(matches!(parse_sen(&s, b"<Sen><IPOC>1</IPOC></Sen>", &mut back), Err(ParseError::Sentype { .. })));
     }
 
@@ -332,7 +347,10 @@ mod tests {
     fn sen_parser_rejects_entities_in_numeric_fields() {
         let s = schema();
         let mut back = SensorTelegram::default();
-        assert!(matches!(parse_sen(&s, b"<Sen Type=\"KukaRsi\"><IPOC>1&#48;2</IPOC></Sen>", &mut back), Err(ParseError::Xml(_))));
+        assert!(matches!(
+            parse_sen(&s, b"<Sen Type=\"KukaRsi\"><IPOC>1&#48;2</IPOC></Sen>", &mut back),
+            Err(ParseError::Xml(_))
+        ));
         assert!(matches!(
             parse_sen(&s, b"<Sen Type=\"KukaRsi\"><MoveStop>&amp;1</MoveStop><IPOC>1</IPOC></Sen>", &mut back),
             Err(ParseError::Xml(_))

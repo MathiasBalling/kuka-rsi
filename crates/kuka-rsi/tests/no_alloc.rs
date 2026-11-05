@@ -10,7 +10,7 @@ use kuka_rsi::config::EthernetConfig;
 use kuka_rsi::config::Limits;
 use kuka_rsi::control::{Command, Session};
 use kuka_rsi::link::UdpLink;
-use kuka_rsi::state::{deg2rad6, RobotState};
+use kuka_rsi::state::{RobotState, deg2rad6};
 use kuka_rsi::telegram::{Keyword, Parser, RobotTelegram, Schema, SensorTelegram, Writer};
 use std::net::UdpSocket;
 use std::time::Duration;
@@ -101,12 +101,20 @@ fn hot_paths_do_not_allocate() {
     let limits = Limits::kr10_defaults().with_max_velocity_all(1.0);
     let mut session = Session::new(limits, Duration::from_millis(4), Some(6));
     session.start(&tele);
-    let mut state = RobotState { q: deg2rad6(&tele.aipos), q_setpoint: deg2rad6(&tele.aspos), speed_override: 1.0, program_running: true, ..Default::default() };
+    let mut state = RobotState {
+        q: deg2rad6(&tele.aipos),
+        q_setpoint: deg2rad6(&tele.aspos),
+        speed_override: 1.0,
+        program_running: true,
+        ..Default::default()
+    };
     let mut target = session.q_start();
     target[0] += 0.02;
     let mut points = ArrayVec::new();
     points.push(target);
-    session.apply(Command::Stream { points, cycles_per_point: 50.0, replace: false, batch_remaining: 0, first: true }).unwrap();
+    session
+        .apply(Command::Stream { points, cycles_per_point: 50.0, replace: false, batch_remaining: 0, first: true })
+        .unwrap();
     session.apply(Command::Notify(ArrayString::from("hello").unwrap())).unwrap();
     let mut sen = SensorTelegram::default();
     session.step(&tele, &state, &mut sen);
