@@ -14,7 +14,7 @@ fn binaries_print_help() {
 
 #[test]
 fn sim_runs_for_a_fixed_number_of_cycles() {
-    let cfg = concat!(env!("CARGO_MANIFEST_DIR"), "/../../controller/kuka_rsi_monitor.xml");
+    let cfg = concat!(env!("CARGO_MANIFEST_DIR"), "/controller/kuka_rsi_monitor.xml");
     let out = Command::new(env!("CARGO_BIN_EXE_rsi-sim"))
         .args(["--config", cfg, "--target", "127.0.0.1:49999", "--cycle-ms", "1", "--max-cycles", "50"])
         .output()
@@ -33,7 +33,7 @@ fn ctrl_c_in_monitor_pulses_move_stop() {
     use std::sync::mpsc;
     use std::time::Duration;
 
-    let cfg = concat!(env!("CARGO_MANIFEST_DIR"), "/../../controller/kuka_rsi_ethernet.xml");
+    let cfg = concat!(env!("CARGO_MANIFEST_DIR"), "/controller/kuka_rsi_ethernet.xml");
     let addr = "127.0.0.1:49981";
     let mut monitor = Command::new(env!("CARGO_BIN_EXE_rsi-monitor"))
         .args(["--config", cfg, "--bind", addr, "--wait", "10"])

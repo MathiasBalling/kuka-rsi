@@ -113,7 +113,7 @@ mod tests {
     use super::*;
     use crate::config::EthernetConfig;
 
-    const SHIPPED: &str = include_str!("../../../../controller/kuka_rsi_ethernet.xml");
+    const SHIPPED: &str = include_str!("../../controller/kuka_rsi_ethernet.xml");
 
     fn schema(xml: &str) -> Schema {
         Schema::compile(&EthernetConfig::from_str(xml).unwrap()).unwrap()

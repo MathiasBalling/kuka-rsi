@@ -661,6 +661,18 @@ impl PyDriver {
     }
 }
 
+/// The bundled controller files as `(name, contents, robot_dir)`; `kuka_rsi.controller` wraps it.
+#[pyfunction]
+fn controller_files() -> Vec<(&'static str, &'static str, Option<&'static str>)> {
+    kuka_rsi::controller::FILES.iter().map(|f| (f.name, f.contents, f.robot_dir)).collect()
+}
+
+/// Write the bundled controller files into `directory`; returns the written paths.
+#[pyfunction]
+fn write_controller_files(directory: std::path::PathBuf) -> PyResult<Vec<std::path::PathBuf>> {
+    Ok(kuka_rsi::controller::write_files(&directory)?)
+}
+
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     pyo3_log::init();
@@ -669,6 +681,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDriver>()?;
     m.add_class::<PyRobotState>()?;
     m.add_class::<PyStats>()?;
+    m.add_function(wrap_pyfunction!(controller_files, m)?)?;
+    m.add_function(wrap_pyfunction!(write_controller_files, m)?)?;
     m.add("Error", m.py().get_type::<Error>())?;
     m.add("LinkLost", m.py().get_type::<LinkLost>())?;
     m.add("ProtocolError", m.py().get_type::<ProtocolError>())?;

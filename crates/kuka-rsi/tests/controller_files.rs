@@ -2,12 +2,12 @@
 
 use kuka_rsi::config::{EthernetConfig, Limits};
 
-const ETH: &str = include_str!("../../../controller/kuka_rsi_ethernet.xml");
-const MON: &str = include_str!("../../../controller/kuka_rsi_monitor.xml");
-const RSIX: &str = include_str!("../../../controller/kuka_rsi.rsix");
-const RSIX_MON: &str = include_str!("../../../controller/kuka_rsi_monitor.rsix");
-const SRC: &str = include_str!("../../../controller/kuka_rsi.src");
-const SRC_MON: &str = include_str!("../../../controller/kuka_rsi_monitor.src");
+const ETH: &str = include_str!("../controller/kuka_rsi_ethernet.xml");
+const MON: &str = include_str!("../controller/kuka_rsi_monitor.xml");
+const RSIX: &str = include_str!("../controller/kuka_rsi.rsix");
+const RSIX_MON: &str = include_str!("../controller/kuka_rsi_monitor.rsix");
+const SRC: &str = include_str!("../controller/kuka_rsi.src");
+const SRC_MON: &str = include_str!("../controller/kuka_rsi_monitor.src");
 
 #[test]
 fn ethernet_configs_parse() {
@@ -77,4 +77,53 @@ fn krl_programs_use_the_expected_calls() {
     assert!(SRC_MON.contains("RSI_CREATE(\"kuka_rsi_monitor\", contid, TRUE)"));
     assert!(SRC_MON.contains("WAIT SEC"));
     assert!(!SRC_MON.contains("RSI_MOVECORR"));
+}
+
+const BUNDLED: [&str; 7] = [
+    "kuka_rsi_ethernet.xml",
+    "kuka_rsi_monitor.xml",
+    "kuka_rsi.rsix",
+    "kuka_rsi_monitor.rsix",
+    "kuka_rsi.src",
+    "kuka_rsi_monitor.src",
+    "LICENSE-FZI",
+];
+
+#[test]
+fn bundled_controller_files_match_the_controller_folder() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("controller");
+    let names: Vec<&str> = kuka_rsi::controller::FILES.iter().map(|f| f.name).collect();
+    assert_eq!(names, BUNDLED);
+    for f in kuka_rsi::controller::FILES {
+        assert_eq!(f.contents, std::fs::read_to_string(dir.join(f.name)).unwrap(), "{}", f.name);
+    }
+    let robot_dir = |n: &str| kuka_rsi::controller::FILES.iter().find(|f| f.name == n).unwrap().robot_dir;
+    assert_eq!(robot_dir("kuka_rsi.src"), Some(r"KRC:\R1\Program\"));
+    assert_eq!(robot_dir("kuka_rsi.rsix"), Some(r"C:\KRC\ROBOTER\Config\User\Common\SensorInterface\"));
+    assert_eq!(robot_dir("LICENSE-FZI"), None);
+}
+
+#[test]
+fn write_files_puts_every_bundled_file_in_the_directory() {
+    let dir = std::env::temp_dir().join(format!("kuka-rsi-controller-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let written = kuka_rsi::controller::write_files(&dir.join("nested")).unwrap();
+    assert_eq!(written.len(), BUNDLED.len());
+    for (path, name) in written.iter().zip(BUNDLED) {
+        assert_eq!(path, &dir.join("nested").join(name));
+        let bytes = std::fs::read(path).unwrap();
+        let text = String::from_utf8(bytes.clone()).unwrap();
+        if name.ends_with(".src") {
+            // KRL programs go out with CRLF only, as the controller's editor writes them.
+            assert_eq!(text.matches("\r\n").count(), text.matches('\n').count(), "{name}");
+            assert_eq!(text.replace("\r\n", "\n"), std::fs::read_to_string(dir_of_shipped(name)).unwrap());
+        } else {
+            assert_eq!(text, std::fs::read_to_string(dir_of_shipped(name)).unwrap(), "{name}");
+        }
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+fn dir_of_shipped(name: &str) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("controller").join(name)
 }

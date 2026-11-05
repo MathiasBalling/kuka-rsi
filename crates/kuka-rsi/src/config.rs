@@ -410,8 +410,8 @@ impl DriverConfig {
 mod tests {
     use super::*;
 
-    const SHIPPED: &str = include_str!("../../../controller/kuka_rsi_ethernet.xml");
-    const MONITOR: &str = include_str!("../../../controller/kuka_rsi_monitor.xml");
+    const SHIPPED: &str = include_str!("../controller/kuka_rsi_ethernet.xml");
+    const MONITOR: &str = include_str!("../controller/kuka_rsi_monitor.xml");
 
     #[test]
     fn parses_shipped_config() {

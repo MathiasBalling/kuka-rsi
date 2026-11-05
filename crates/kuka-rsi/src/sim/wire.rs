@@ -261,7 +261,7 @@ mod tests {
     use crate::config::EthernetConfig;
     use crate::telegram::{Parser, RobotTelegram, Schema, SensorTelegram, Writer};
 
-    const SHIPPED: &str = include_str!("../../../../controller/kuka_rsi_ethernet.xml");
+    const SHIPPED: &str = include_str!("../../controller/kuka_rsi_ethernet.xml");
 
     fn schema() -> Schema {
         Schema::compile(&EthernetConfig::from_str(SHIPPED).unwrap()).unwrap()

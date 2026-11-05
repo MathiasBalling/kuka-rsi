@@ -7,7 +7,7 @@ use kuka_rsi::state::{RobotState, SessionState};
 use kuka_rsi::stats::Event;
 use kuka_rsi::Error;
 
-const SHIPPED: &str = include_str!("../../../controller/kuka_rsi_ethernet.xml");
+const SHIPPED: &str = include_str!("../controller/kuka_rsi_ethernet.xml");
 
 fn driver(link_timeout_ms: u64) -> Driver {
     let cfg = DriverConfig::new(EthernetConfig::from_str(SHIPPED).unwrap())

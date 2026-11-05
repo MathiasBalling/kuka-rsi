@@ -4,7 +4,7 @@ use kuka_rsi::config::{DriverConfig, EthernetConfig, Limits};
 use kuka_rsi::driver::Driver;
 use kuka_rsi::sim::{ControllerSim, SimConfig};
 
-const SHIPPED: &str = include_str!("../../../controller/kuka_rsi_ethernet.xml");
+const SHIPPED: &str = include_str!("../controller/kuka_rsi_ethernet.xml");
 
 fn run(seconds: u64, rt: bool) -> (kuka_rsi::stats::Stats, kuka_rsi::sim::SimStatus) {
     let cfg = DriverConfig::new(EthernetConfig::from_str(SHIPPED).unwrap())

@@ -247,7 +247,7 @@ mod tests {
     use super::*;
     use crate::config::EthernetConfig;
 
-    const SHIPPED: &str = include_str!("../../../../controller/kuka_rsi_ethernet.xml");
+    const SHIPPED: &str = include_str!("../../controller/kuka_rsi_ethernet.xml");
 
     fn cfg(receive: &str, send: &str) -> EthernetConfig {
         let xml = format!(

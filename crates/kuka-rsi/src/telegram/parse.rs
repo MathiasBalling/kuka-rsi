@@ -467,7 +467,7 @@ mod tests {
     use super::*;
     use crate::config::EthernetConfig;
 
-    const SHIPPED: &str = include_str!("../../../../controller/kuka_rsi_ethernet.xml");
+    const SHIPPED: &str = include_str!("../../controller/kuka_rsi_ethernet.xml");
 
     fn schema(xml: &str) -> Schema {
         Schema::compile(&EthernetConfig::from_str(xml).unwrap()).unwrap()
@@ -571,7 +571,7 @@ mod tests {
 
     /// First telegram from the real controller (KR C5 micro, KSS 8.7, RSI 5.0), monitor config.
     const REAL_MONITOR: &[u8] = include_bytes!("../../tests/fixtures/kr10_monitor_first.xml");
-    const SHIPPED_MONITOR: &str = include_str!("../../../../controller/kuka_rsi_monitor.xml");
+    const SHIPPED_MONITOR: &str = include_str!("../../controller/kuka_rsi_monitor.xml");
 
     #[test]
     fn parses_the_first_real_telegram() {

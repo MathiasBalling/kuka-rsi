@@ -436,7 +436,7 @@ mod tests {
     use crate::telegram::{Parser, RobotTelegram, Schema, SensorTelegram, Writer};
     use std::net::UdpSocket;
 
-    const SHIPPED: &str = include_str!("../../../../controller/kuka_rsi_ethernet.xml");
+    const SHIPPED: &str = include_str!("../../controller/kuka_rsi_ethernet.xml");
 
     struct Pc {
         sock: UdpSocket,

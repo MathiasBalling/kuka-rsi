@@ -1,3 +1,5 @@
+import os
+import pathlib
 from collections.abc import Sequence
 from typing import Any, Self
 
@@ -186,3 +188,8 @@ class ControllerSim:
     def stop(self) -> str: ...
     def __enter__(self) -> Self: ...
     def __exit__(self, *args: object) -> bool: ...
+
+def controller_files() -> list[tuple[str, str, str | None]]:
+    """The bundled controller files as (name, contents, robot_dir); see kuka_rsi.controller."""
+def write_controller_files(directory: str | os.PathLike[str]) -> list[pathlib.Path]:
+    """Write the bundled controller files into `directory`; see kuka_rsi.controller.write_files."""
