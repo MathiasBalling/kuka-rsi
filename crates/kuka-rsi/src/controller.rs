@@ -49,14 +49,36 @@ impl ControllerFile {
 
 /// Write every bundled file ([`ControllerFile::robot_bytes`]) into `dir` (created if missing),
 /// overwriting files of the same name. Returns the written paths in the order of [`FILES`].
+///
+/// On a FAT or exFAT USB stick, macOS stores extended attributes in an AppleDouble file
+/// `._<name>` next to every file and folder it writes; the controller would show them as broken
+/// programs and configs. They are removed for every file written, for `dir` and for the folders
+/// created above it. No other files are touched.
 pub fn write_files(dir: &Path) -> io::Result<Vec<PathBuf>> {
+    let created: Vec<PathBuf> =
+        dir.ancestors().take_while(|d| !d.as_os_str().is_empty() && !d.exists()).map(Path::to_path_buf).collect();
     std::fs::create_dir_all(dir)?;
-    FILES
+    let paths = FILES
         .iter()
         .map(|f| {
             let path = dir.join(f.name);
             std::fs::write(&path, f.robot_bytes())?;
             Ok(path)
         })
-        .collect()
+        .collect::<io::Result<Vec<_>>>()?;
+    for p in paths.iter().map(PathBuf::as_path).chain([dir]).chain(created.iter().map(PathBuf::as_path)) {
+        remove_appledouble(p)?;
+    }
+    Ok(paths)
+}
+
+/// Remove the macOS AppleDouble file `._<name>` that sits next to `path`, if there is one.
+fn remove_appledouble(path: &Path) -> io::Result<()> {
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else { return Ok(()) };
+    let mut double = std::ffi::OsString::from("._");
+    double.push(name);
+    match std::fs::remove_file(parent.join(double)) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
 }

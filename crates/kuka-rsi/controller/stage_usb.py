@@ -32,6 +32,10 @@ def main() -> None:
     ap.add_argument("--keep-start-pose", action="store_true", help="keep the fixed PTP pose of kuka_rsi.src")
     a = ap.parse_args()
 
+    # Folders this run creates, the output folder included: their AppleDouble files land in the
+    # folder above, outside out_dir.
+    created = [d for d in [a.out_dir, *a.out_dir.parents] if not d.exists()]
+
     sensor = a.out_dir / "SensorInterface"
     fallback = a.out_dir / "SensorInterface_crlf_fallback"
     program = a.out_dir / "Program"
@@ -51,10 +55,12 @@ def main() -> None:
             text = text.replace(START_POSE, "PTP $AXIS_ACT   ; bring-up: stay where the robot is")
         (program / name).write_bytes(crlf(text).encode("utf-8"))
 
-    # macOS writes AppleDouble "._name" files next to each file on FAT/exFAT sticks; on the
-    # controller they would show up as broken programs and configs.
+    # macOS writes AppleDouble "._name" files next to each file and folder on FAT/exFAT sticks;
+    # on the controller they would show up as broken programs and configs.
     for p in a.out_dir.rglob("._*"):
         p.unlink()
+    for d in [a.out_dir, *created]:
+        d.parent.joinpath("._" + d.name).unlink(missing_ok=True)
 
     for p in sorted(a.out_dir.rglob("*")):
         if p.is_file():

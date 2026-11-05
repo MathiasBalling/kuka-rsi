@@ -132,3 +132,29 @@ fn write_files_puts_every_bundled_file_in_the_directory() {
 fn dir_of_shipped(name: &str) -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("controller").join(name)
 }
+
+#[test]
+fn write_files_removes_the_macos_appledouble_files_it_causes() {
+    // On FAT/exFAT sticks macOS stores extended attributes in "._<name>" files next to every
+    // file and folder it writes; the controller would list them as broken programs and configs.
+    let dir = std::env::temp_dir().join(format!("kuka-rsi-appledouble-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("._usb"), b"apple double of the folder").unwrap();
+    std::fs::write(dir.join("._unrelated"), b"not ours").unwrap();
+    let out = dir.join("usb");
+    std::fs::create_dir_all(&out).unwrap();
+    std::fs::write(out.join("._kuka_rsi.src"), b"stale").unwrap();
+
+    kuka_rsi::controller::write_files(&out.join("files")).unwrap();
+    // Simulate what macOS writes for the new folder and files on a FAT stick, then write again.
+    std::fs::write(out.join("._files"), b"x").unwrap();
+    std::fs::write(out.join("files").join("._kuka_rsi.rsix"), b"x").unwrap();
+    kuka_rsi::controller::write_files(&out.join("files")).unwrap();
+
+    assert!(!out.join("._files").exists());
+    assert!(!out.join("files").join("._kuka_rsi.rsix").exists());
+    assert!(out.join("._kuka_rsi.src").exists(), "only AppleDouble files of what it wrote");
+    assert!(dir.join("._unrelated").exists());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
