@@ -307,8 +307,8 @@ and 0 when it is stopped (S6.5); the `ipoc` column rises by 4 per row; whether t
 
 | Step | Result |
 | --- | --- |
-| S1 files, test 1, doctor | |
-| S2 single axes, 10° / 30° (max lag per axis) | |
+| S1 files, test 1, doctor | Pass: new folder layout copied, test 1 and every doctor check passed |
+| S2 single axes, 10° / 30° (max lag per axis) | Pass: A1 to A6 each 30° and back. Logged: A6 10° max lag 0.32°, end error 0.003°; A1 30° max lag 0.30°, end error 0.0003°; other axes still within 0.001°; `Delay` 0, no cycle gaps. Override read 100 % in both logs; the lag at 10°/s is about 30 ms (7 to 8 cycles) |
 | S3 five axes, 3 repeats | |
 | S4 speed 10 / 20 / 30 °/s (max lag, T1 limit) | |
 | S5 stream Rust / Python, stop-after | |
@@ -318,7 +318,7 @@ and 0 when it is stopped (S6.5); the `ipoc` column rises by 4 per row; whether t
 | S6.4 Ctrl-C mid-move | |
 | S6.5 override, enabling switch | |
 | S7 25 min hold, idle start | |
-| Item 6: `ProgStatus`, `IPOC`, `Delay` | |
+| Item 6: `ProgStatus`, `IPOC`, `Delay` | `IPOC` +4 on every telegram (4,055 steps in the S2 logs); `program_running` 1 throughout a run. Stopped state and `Delay` counting still open |
 
 ## Troubleshooting
 
