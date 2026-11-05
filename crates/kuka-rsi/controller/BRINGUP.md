@@ -185,7 +185,7 @@ every step; they are the evidence for the results table.
 1. Copy the new files (step 4). On the controller, delete the program and config files from the
    first session if their names differ from the ones on the stick, so only one set is there.
 2. Test 1 (`rsi-monitor` with `kuka_rsi_monitor`), as in step 5.
-3. `target/release/rsi-doctor --robot 192.168.10.147 --wait 60`, start `kuka_rsi` when it says
+3. `target/release/rsi-doctor --config controller/kuka_rsi_ethernet.xml --robot 192.168.10.147 --wait 60`, start `kuka_rsi` when it says
    "listening".
 
 Pass: test 1 as before; every doctor check PASS (ping may WARN), about 250 telegrams/s, no late
