@@ -63,6 +63,12 @@ holding the command short). `Limits.kr10_defaults()` keeps an acceleration limit
 
 ## Behavior notes
 
+- Ctrl-C in `rsi-monitor`, `jog` and `stream_trajectory` ends the robot program cleanly:
+  the driver pulses `MoveStop`, waits up to 1 s for `RSI_MOVECORR()` to return, and the
+  tool exits with code 130. In Python, leaving the `with Driver(...)` block (also on
+  `KeyboardInterrupt`) does the same through `close()`, but a Ctrl-C during a blocking
+  wait (`wait_idle`, `move_to(block=True)`, `wait_for_robot`) only takes effect when that
+  wait returns.
 - `fault(msg)` sends `Error: msg` to the robot and freezes the command. The fault
   persists until the KRL program restarts (a new session): meanwhile `is_faulted()` is
   true and `stream`, `move_to`, `notify` and `wait_idle` raise `Faulted` (Rust:

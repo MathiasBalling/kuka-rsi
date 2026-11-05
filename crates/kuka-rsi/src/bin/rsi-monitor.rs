@@ -26,7 +26,22 @@ struct Args {
     stop_channel: String,
 }
 
+/// Set by the Ctrl-C handler; the handler then closes the driver and exits with 130.
+static INTERRUPTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let result = run();
+    if INTERRUPTED.load(std::sync::atomic::Ordering::SeqCst) {
+        // The session ending under Ctrl-C makes `run` fail (link lost); let the handler finish
+        // the clean shutdown and exit instead of reporting that as an error.
+        loop {
+            std::thread::park();
+        }
+    }
+    result
+}
+
+fn run() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let a = Args::parse();
     let mut cfg = DriverConfig::from_ethernet_xml(&a.config)?;
@@ -38,7 +53,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !cfg.ethernet.onlysend && cfg.ethernet.receive.iter().any(|e| e.tag == a.stop_channel) {
         cfg = cfg.stop_channel(&a.stop_channel);
     }
-    let drv = Driver::spawn(cfg)?;
+    let drv = std::sync::Arc::new(Driver::spawn(cfg)?);
+    // Ctrl-C ends the robot program cleanly: close() pulses MoveStop and waits for the session
+    // to end. Without this the robot stops on its own after the ETHERNET timeout, with a message.
+    let on_ctrl_c = std::sync::Arc::clone(&drv);
+    ctrlc::set_handler(move || {
+        INTERRUPTED.store(true, std::sync::atomic::Ordering::SeqCst);
+        eprintln!("Ctrl-C: ending the robot program (MoveStop) and closing");
+        let _ = on_ctrl_c.close();
+        std::process::exit(130);
+    })?;
     println!("listening on {} for the first telegram (up to {} s)", drv.local_addr(), a.wait);
     drv.wait_for_robot(Duration::from_secs_f64(a.wait))?;
     println!("robot connected, start pose {:?} deg", rad2deg6(&drv.state().q_setpoint));

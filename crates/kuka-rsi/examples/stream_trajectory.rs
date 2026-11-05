@@ -6,7 +6,22 @@ use std::time::Duration;
 use kuka_rsi::config::{DriverConfig, Limits};
 use kuka_rsi::driver::Driver;
 
+/// Set by the Ctrl-C handler; the handler then closes the driver and exits with 130.
+static INTERRUPTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let result = run();
+    if INTERRUPTED.load(std::sync::atomic::Ordering::SeqCst) {
+        // The session ending under Ctrl-C makes `run` fail (link lost); let the handler finish
+        // the clean shutdown and exit instead of reporting that as an error.
+        loop {
+            std::thread::park();
+        }
+    }
+    result
+}
+
+fn run() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
     let mut args = std::env::args().skip(1);
     let config = args.next().ok_or("usage: stream_trajectory <ethernet.xml> [bind]")?;
@@ -16,7 +31,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(b) = args.next() {
         cfg = cfg.bind(b.parse()?);
     }
-    let drv = Driver::spawn(cfg)?;
+    let drv = std::sync::Arc::new(Driver::spawn(cfg)?);
+    // Ctrl-C ends the robot program cleanly: close() pulses MoveStop and waits for the session
+    // to end. Without this the robot stops on its own after the ETHERNET timeout, with a message.
+    let on_ctrl_c = std::sync::Arc::clone(&drv);
+    ctrlc::set_handler(move || {
+        INTERRUPTED.store(true, std::sync::atomic::Ordering::SeqCst);
+        eprintln!("Ctrl-C: ending the robot program (MoveStop) and closing");
+        let _ = on_ctrl_c.close();
+        std::process::exit(130);
+    })?;
     drv.wait_for_robot(Duration::from_secs(60))?;
     let q0 = drv.state().q_setpoint;
     let dt = Duration::from_millis(100);
