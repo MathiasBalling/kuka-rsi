@@ -1,7 +1,7 @@
 """Stage the controller files into a folder to copy onto a USB stick.
 
 Usage (from the repository root):
-    python3 kuka-rsi/controller/stage_usb.py OUT_DIR [--keep-start-pose]
+    python3 controller/stage_usb.py OUT_DIR [--keep-start-pose]
 
 OUT_DIR gets three folders:
   SensorInterface/                as shipped, for C:\\KRC\\ROBOTER\\Config\\User\\Common\\SensorInterface\\

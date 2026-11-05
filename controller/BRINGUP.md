@@ -13,12 +13,12 @@ E-stop.
 ## 0. Before leaving the desk
 
 ```bash
-cargo build --manifest-path kuka-rsi/Cargo.toml -p kuka-rsi --features cli --release --bins --examples
-python3 kuka-rsi/controller/stage_usb.py /Volumes/<STICK>/kuka_rsi_usb
+cargo build -p kuka-rsi --features cli --release --bins --examples
+python3 controller/stage_usb.py /Volumes/<STICK>/kuka_rsi_usb
 ```
 
-The build puts `rsi-monitor` in `kuka-rsi/target/release/` and `jog` and `stream_trajectory` in
-`kuka-rsi/target/release/examples/`. The USB folder holds:
+The build puts `rsi-monitor` in `target/release/` and `jog` and `stream_trajectory` in
+`target/release/examples/`. The USB folder holds:
 
 | Folder | Goes to | Contents |
 | --- | --- | --- |
@@ -83,7 +83,7 @@ Never put both `SensorInterface` sets in the target folder; the names are the sa
 PC first, from the repository root:
 
 ```bash
-kuka-rsi/target/release/rsi-monitor --config kuka-rsi/controller/kuka_rsi_monitor.xml --wait 300 | tee ~/rsi_test1.log
+target/release/rsi-monitor --config controller/kuka_rsi_monitor.xml --wait 300 | tee ~/rsi_test1.log
 ```
 
 Then select and start `kuka_rsi_monitor` on the pendant (it runs 60 s, the robot only sends).
@@ -96,7 +96,7 @@ values.
 T1, low override. PC first:
 
 ```bash
-kuka-rsi/target/release/rsi-monitor --config kuka-rsi/controller/kuka_rsi_ethernet.xml --wait 300 --seconds 60 | tee ~/rsi_test2.log
+target/release/rsi-monitor --config controller/kuka_rsi_ethernet.xml --wait 300 --seconds 60 | tee ~/rsi_test2.log
 ```
 
 Then start `kuka_rsi` (in T1, hold the enabling switch and the Start key).
@@ -110,7 +110,7 @@ A rising `delay` means the Mac answers late; the robot stops with an RSI communi
 T1, the tool cable free to follow A6. PC first:
 
 ```bash
-kuka-rsi/target/release/examples/jog kuka-rsi/controller/kuka_rsi_ethernet.xml --deg 45 --secs 10
+target/release/examples/jog controller/kuka_rsi_ethernet.xml --deg 45 --secs 10
 ```
 
 Then start `kuka_rsi`. A6 turns `--deg` (default 2, at most 45) over `--secs` and back;
@@ -137,7 +137,7 @@ Next: `stream_trajectory` (±3° sine on A6), then checklist steps 4 to 6 in `RE
 - The USB Ethernet link dropped once mid-session (`ifconfig en7` showed `status: inactive`, then
   ARP `incomplete`); reseat the adapter and cable if the robot stops answering pings.
 
-Results (Mac, macOS, USB 1 Gbit adapter, Python-free Rust driver):
+Results (Mac, macOS, USB 1 Gbit adapter, Rust driver):
 
 | Test | Result |
 | --- | --- |

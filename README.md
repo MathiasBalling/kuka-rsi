@@ -12,28 +12,27 @@ First time at the robot, step by step: `controller/BRINGUP.md`.
 
 - `crates/kuka-rsi`: the library, the `rsi-sim` and `rsi-monitor` binaries (feature
   `cli`), examples and tests.
-- `crates/kuka-rsi-py`: the `kuka_rsi` Python package (PyO3 + maturin), a member of the
-  repository's uv workspace.
+- `crates/kuka-rsi-py`: the `kuka_rsi` Python package (PyO3 + maturin).
 - `controller/`: files for the robot.
 
 ## Build and test
 
 ```bash
-cargo test --manifest-path kuka-rsi/Cargo.toml -p kuka-rsi                     # Rust
-cargo test --manifest-path kuka-rsi/Cargo.toml -p kuka-rsi --features cli --test cli
-cargo test --manifest-path kuka-rsi/Cargo.toml -p kuka-rsi --test no_alloc      # allocation proof
-cargo test --manifest-path kuka-rsi/Cargo.toml -p kuka-rsi --release --test soak -- --ignored --nocapture
-uv sync --package kuka-rsi                                                     # Python (add --reinstall-package kuka-rsi after Rust changes)
-uv run --package kuka-rsi pytest kuka-rsi/crates/kuka-rsi-py/tests
+cargo test -p kuka-rsi                     # Rust
+cargo test -p kuka-rsi --features cli --test cli
+cargo test -p kuka-rsi --test no_alloc      # allocation proof
+cargo test -p kuka-rsi --release --test soak -- --ignored --nocapture
+uv --directory crates/kuka-rsi-py sync                                         # Python (add --reinstall-package kuka-rsi after Rust changes)
+uv --directory crates/kuka-rsi-py run pytest tests
 ```
 
 ## Try it without the robot
 
 ```bash
-cargo run --manifest-path kuka-rsi/Cargo.toml -p kuka-rsi --features cli --bin rsi-sim -- \
-    --config kuka-rsi/controller/kuka_rsi_ethernet.xml --target 127.0.0.1:49152 --lag 3
-cargo run --manifest-path kuka-rsi/Cargo.toml -p kuka-rsi --example stream_trajectory -- \
-    kuka-rsi/controller/kuka_rsi_ethernet.xml 127.0.0.1:49152
+cargo run -p kuka-rsi --features cli --bin rsi-sim -- \
+    --config controller/kuka_rsi_ethernet.xml --target 127.0.0.1:49152 --lag 3
+cargo run -p kuka-rsi --example stream_trajectory -- \
+    controller/kuka_rsi_ethernet.xml 127.0.0.1:49152
 ```
 
 ## Python
@@ -43,7 +42,7 @@ import numpy as np
 from kuka_rsi import Driver, Limits
 
 limits = Limits.kr10_defaults(max_velocity=np.radians(30))
-with Driver("kuka-rsi/controller/kuka_rsi_ethernet.xml", limits=limits, stop_channel="MoveStop") as robot:
+with Driver("controller/kuka_rsi_ethernet.xml", limits=limits, stop_channel="MoveStop") as robot:
     state = robot.state()                       # .q, .q_setpoint, .tcp, .torque (numpy), .t, .ipoc, .delay
     robot.move_to(state.q + np.radians([0, 0, 0, 0, 0, 2]), duration=2.0, block=True)
     for chunk in policy():                      # (n, 6) absolute joint targets, radians
