@@ -84,7 +84,7 @@ fn krl_programs_use_the_expected_calls() {
     assert!(!SRC_MON.contains("RSI_MOVECORR"));
 }
 
-const BUNDLED: [&str; 7] = [
+const BUNDLED: [&str; 9] = [
     "kuka_rsi_ethernet.xml",
     "kuka_rsi_monitor.xml",
     "kuka_rsi.rsix",
@@ -92,20 +92,32 @@ const BUNDLED: [&str; 7] = [
     "kuka_rsi.src",
     "kuka_rsi_monitor.src",
     "LICENSE-FZI",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
 ];
+
+/// Where each bundled file lands under the output folder: one folder per target on the robot,
+/// so the pendant can copy a whole folder; the licenses stay at the top, on the PC side.
+fn local_path(name: &str) -> String {
+    match name {
+        n if n.ends_with(".xml") || n.ends_with(".rsix") => format!("SensorInterface/{n}"),
+        n if n.ends_with(".src") => format!("Program/{n}"),
+        n => n.to_string(),
+    }
+}
 
 #[test]
 fn bundled_controller_files_match_the_controller_folder() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("controller");
     let names: Vec<&str> = kuka_rsi::controller::FILES.iter().map(|f| f.name).collect();
     assert_eq!(names, BUNDLED);
     for f in kuka_rsi::controller::FILES {
-        assert_eq!(f.contents, std::fs::read_to_string(dir.join(f.name)).unwrap(), "{}", f.name);
+        assert_eq!(f.contents, std::fs::read_to_string(dir_of_shipped(f.name)).unwrap(), "{}", f.name);
     }
     let robot_dir = |n: &str| kuka_rsi::controller::FILES.iter().find(|f| f.name == n).unwrap().robot_dir;
     assert_eq!(robot_dir("kuka_rsi.src"), Some(r"KRC:\R1\Program\"));
     assert_eq!(robot_dir("kuka_rsi.rsix"), Some(r"C:\KRC\ROBOTER\Config\User\Common\SensorInterface\"));
     assert_eq!(robot_dir("LICENSE-FZI"), None);
+    assert_eq!(robot_dir("LICENSE-MIT"), None);
 }
 
 #[test]
@@ -115,7 +127,7 @@ fn write_files_puts_every_bundled_file_in_the_directory() {
     let written = kuka_rsi::controller::write_files(&dir.join("nested")).unwrap();
     assert_eq!(written.len(), BUNDLED.len());
     for (path, name) in written.iter().zip(BUNDLED) {
-        assert_eq!(path, &dir.join("nested").join(name));
+        assert_eq!(path, &dir.join("nested").join(local_path(name)));
         let bytes = std::fs::read(path).unwrap();
         let text = String::from_utf8(bytes.clone()).unwrap();
         if name.ends_with(".src") {
@@ -130,7 +142,13 @@ fn write_files_puts_every_bundled_file_in_the_directory() {
 }
 
 fn dir_of_shipped(name: &str) -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("controller").join(name)
+    let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    // The project's own licenses sit at the crate root, everything else in controller/.
+    if name == "LICENSE-MIT" || name == "LICENSE-APACHE" {
+        crate_dir.join(name)
+    } else {
+        crate_dir.join("controller").join(name)
+    }
 }
 
 #[test]
@@ -149,12 +167,22 @@ fn write_files_removes_the_macos_appledouble_files_it_causes() {
     kuka_rsi::controller::write_files(&out.join("files")).unwrap();
     // Simulate what macOS writes for the new folder and files on a FAT stick, then write again.
     std::fs::write(out.join("._files"), b"x").unwrap();
-    std::fs::write(out.join("files").join("._kuka_rsi.rsix"), b"x").unwrap();
+    std::fs::write(out.join("files").join("SensorInterface").join("._kuka_rsi.rsix"), b"x").unwrap();
+    std::fs::write(out.join("files").join("._Program"), b"x").unwrap();
     kuka_rsi::controller::write_files(&out.join("files")).unwrap();
 
     assert!(!out.join("._files").exists());
-    assert!(!out.join("files").join("._kuka_rsi.rsix").exists());
+    assert!(!out.join("files").join("SensorInterface").join("._kuka_rsi.rsix").exists());
+    assert!(!out.join("files").join("._Program").exists(), "the subfolders' AppleDouble files too");
     assert!(out.join("._kuka_rsi.src").exists(), "only AppleDouble files of what it wrote");
     assert!(dir.join("._unrelated").exists());
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn the_program_starts_and_ends_where_the_robot_stands() {
+    // Tested at the robot: no PTP to a fixed pose before RSI starts or after it ends.
+    let src = std::fs::read_to_string(dir_of_shipped("kuka_rsi.src")).unwrap();
+    let ptps: Vec<&str> = src.lines().map(str::trim).filter(|l| l.starts_with("PTP")).collect();
+    assert_eq!(ptps, ["PTP $AXIS_ACT", "PTP $AXIS_ACT"]);
 }

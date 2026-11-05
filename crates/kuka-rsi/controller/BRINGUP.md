@@ -18,17 +18,17 @@ python3 controller/stage_usb.py /Volumes/<STICK>/kuka_rsi_usb
 ```
 
 The build puts `rsi-doctor` and `rsi-monitor` in `target/release/` and `jog` and `stream_trajectory` in
-`target/release/examples/`. The USB folder holds:
+`target/release/examples/`. `stage_usb.py` writes the same tree as `python -m kuka_rsi.controller`
+and removes the macOS `._*` files from the stick. The USB folder holds:
 
 | Folder | Goes to | Contents |
 | --- | --- | --- |
 | `SensorInterface/` | `C:\KRC\ROBOTER\Config\User\Common\SensorInterface\` | 2 × `.xml`, 2 × `.rsix`, as in the repo |
-| `SensorInterface_crlf_fallback/` | same, only if the first set is rejected | same files, CRLF line endings and a UTF-8 BOM |
-| `Program/` | `KRC:\R1\Program\` | `kuka_rsi.src`, `kuka_rsi_monitor.src` |
+| `Program/` | `KRC:\R1\Program\` | `kuka_rsi.src`, `kuka_rsi_monitor.src`, CRLF line endings |
+| (top) | stays on the stick | `LICENSE-FZI`, `LICENSE-MIT`, `LICENSE-APACHE` |
 
-In the staged `kuka_rsi.src` the fixed start pose is replaced with `PTP $AXIS_ACT`: the
-program starts and parks where the robot stands, with no PTP move. Pass `--keep-start-pose` to
-keep the pose from the repo.
+`kuka_rsi.src` starts and parks with `PTP $AXIS_ACT`: block coincidence where the robot
+stands, no PTP move. Replace both lines with a taught pose if the program should move there first.
 
 ## 1. Pendant checks (T1, user group Expert)
 
@@ -87,9 +87,10 @@ replies and the robot's `Delay`, then ends the program with `MoveStop`. Without 
 - `SensorInterface/*`: this folder is outside the Navigator's normal view. Either WorkVisual
   (Windows) or, as Administrator, Start-up > Service > Minimize HMI and Windows Explorer from the
   USB drive (`E:\` on the cabinet, `K:\` on the smartPAD).
-- `Program/*.src`: Navigator as Expert, copy from the USB drive, paste into `KRC:\R1\Program\`.
+- `Program/*.src`: Navigator as Expert, open `Program` on the USB drive, Edit > Mark all,
+  Edit > Copy, paste into `KRC:\R1\Program\`.
 
-Never put both `SensorInterface` sets in the target folder; the names are the same.
+The licenses stay on the stick.
 
 ## 5. Test 1: connect and read joints (no motion)
 
@@ -165,6 +166,6 @@ Results (Mac, macOS, USB 1 Gbit adapter, Rust driver):
 | --- | --- |
 | `rsi-monitor` fails to start (bind error) | The Mac has no `192.168.10.10` (step 3); `rsi-doctor` says which part is missing |
 | No telegrams, robot stops with an RSI communication error | Cable on a KLI port; the RSI interface exists after the cold start; same subnet both ends; macOS firewall. A failed ping to `.147` proves nothing |
-| Program halts at `RSI_CREATE` | Read the message window. A file read or parse error: swap in `SensorInterface_crlf_fallback/`. Otherwise a parameter in the `.rsix`: open it in RSIVisual |
+| Program halts at `RSI_CREATE` | Read the message window. A file read or parse error: check the file names and that no `._*` files were copied with them. Otherwise a parameter in the `.rsix`: open it in RSIVisual |
 | Program halts at `RSI_ON` | Message window; often the network or the config XML name |
 | `delay` climbs | The PC answers later than 4 ms; close other load, then consider a Linux PC |

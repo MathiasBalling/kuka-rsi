@@ -37,9 +37,11 @@ DECL INT contid
   ;ENDFOLD (USER INI)
 ;ENDFOLD (INI)
 
-; Start pose with the wrist bent (A5 well away from 0). Replace with a taught
-; pose for the cell; the driver captures whatever setpoint it sees first.
-PTP {A1 0, A2 -90, A3 90, A4 0, A5 90, A6 0}
+; Block coincidence where the robot stands: no move before RSI starts. The driver
+; captures whatever setpoint it sees first. For a defined start pose, replace
+; $AXIS_ACT with a taught pose, e.g. PTP {A1 0, A2 -90, A3 90, A4 0, A5 90, A6 0}
+; (keep A5 well away from 0).
+PTP $AXIS_ACT
 
 ret = RSI_CREATE("kuka_rsi", contid, TRUE)
 IF (ret <> RSIOK) THEN
@@ -61,6 +63,7 @@ IF (ret <> RSIOK) THEN
 ENDIF
 ret = RSI_DELETE(contid)
 
-PTP {A1 0, A2 -90, A3 90, A4 0, A5 90, A6 0}
+; Stays where RSI left the robot; waits here for Start.
+PTP $AXIS_ACT
 
 END

@@ -29,6 +29,19 @@ packages:
 python -m kuka_rsi.controller robot_files/   # writes them, prints where each one goes
 ```
 
+```text
+robot_files/
+  SensorInterface/   kuka_rsi_ethernet.xml, kuka_rsi_monitor.xml, kuka_rsi.rsix, kuka_rsi_monitor.rsix
+                     -> C:\KRC\ROBOTER\Config\User\Common\SensorInterface\
+  Program/           kuka_rsi.src, kuka_rsi_monitor.src (CRLF) -> KRC:\R1\Program\
+  LICENSE-FZI, LICENSE-MIT, LICENSE-APACHE (stay on the PC)
+```
+
+One folder per target, so on the pendant you can open a folder on the USB stick, Edit > Mark
+all, Edit > Copy and paste into the target. macOS AppleDouble files (`._name`) are removed
+when writing to a FAT/exFAT stick. Without the package, from a checkout:
+`python3 controller/stage_usb.py robot_files/` writes the same tree.
+
 In Rust: `kuka_rsi::controller::write_files(Path::new("robot_files"))`, or
 `kuka_rsi::controller::FILES` for the contents. Set `IP_NUMBER` in
 `kuka_rsi_ethernet.xml` to the PC's address before copying it to the robot; the driver
@@ -79,7 +92,7 @@ It exits non-zero if a check fails. In code: `kuka_rsi::doctor::run` (Rust) or
 cargo run -p kuka-rsi --features cli --bin rsi-sim -- \
     --config controller/kuka_rsi_ethernet.xml --target 127.0.0.1:49152 --lag 3
 cargo run -p kuka-rsi --example stream_trajectory -- \
-    controller/kuka_rsi_ethernet.xml 127.0.0.1:49152
+    controller/kuka_rsi_ethernet.xml --bind 127.0.0.1:49152
 ```
 
 ## Python

@@ -10,11 +10,13 @@ First bring-up, step by step (network, USB staging, first three tests): `BRINGUP
 | `kuka_rsi_monitor.xml` | same | Same layout with `ONLYSEND` TRUE, for the read-only first step |
 | `kuka_rsi.rsix` | same | RSI context: Ethernet, AxisCorr, AxisCorrMon, Stop, GearTorque, Status, OV_PRO |
 | `kuka_rsi_monitor.rsix` | same | Same context pointing at the monitor config |
-| `kuka_rsi.src` | `KRC:\R1\Program\` | PTP to the start pose, `RSI_ON(#ABSOLUTE)`, `RSI_MOVECORR()` |
+| `kuka_rsi.src` | `KRC:\R1\Program\` | `PTP $AXIS_ACT` (no move), `RSI_ON(#ABSOLUTE)`, `RSI_MOVECORR()` |
 | `kuka_rsi_monitor.src` | `KRC:\R1\Program\` | `RSI_ON`, `WAIT SEC 60`, no motion |
 
 Copy them with WorkVisual (drag into `SensorInterface` and `Program` in the project
-structure, deploy) or with a USB stick. `RSI_CREATE` takes the context name without the
+structure, deploy) or with a USB stick: `python -m kuka_rsi.controller DIR` or
+`python3 controller/stage_usb.py DIR` writes them into `DIR/SensorInterface/` and
+`DIR/Program/`, one folder per target. `RSI_CREATE` takes the context name without the
 `.rsix` extension.
 
 Open both `.rsix` files once in RSIVisual (WorkVisual 6.0 + RSI 5.0 option) and save
@@ -39,7 +41,7 @@ RSI needs its own sensor network, separate from the EKI addresses (`172.31.1.x`)
 
 1. PC: start the driver (`rsi-monitor`, an example, or your Python script). It binds
    `IP_NUMBER:PORT` and waits.
-2. Pendant: select and start the program. After the PTP, `RSI_ON` sends the first
+2. Pendant: select and start the program. After the first `PTP`, `RSI_ON` sends the first
    telegram; the driver answers within 4 ms from then on.
 3. To end: `Driver.close()` pulses `MoveStop`, the program leaves `RSI_MOVECORR()`,
    runs `RSI_OFF` and parks. Stopping the driver without that makes the robot stop with

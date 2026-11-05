@@ -15,7 +15,7 @@ pub const PROGRAM_DIR: &str = r"KRC:\R1\Program\";
 pub struct ControllerFile {
     pub name: &'static str,
     pub contents: &'static str,
-    /// Target folder on the controller; `None` for files that stay on the PC (the license).
+    /// Target folder on the controller; `None` for files that stay on the PC (the licenses).
     pub robot_dir: Option<&'static str>,
 }
 
@@ -33,9 +33,22 @@ pub const FILES: &[ControllerFile] = &[
     file("kuka_rsi.src", include_str!("../controller/kuka_rsi.src"), Some(PROGRAM_DIR)),
     file("kuka_rsi_monitor.src", include_str!("../controller/kuka_rsi_monitor.src"), Some(PROGRAM_DIR)),
     file("LICENSE-FZI", include_str!("../controller/LICENSE-FZI"), None),
+    file("LICENSE-MIT", include_str!("../LICENSE-MIT"), None),
+    file("LICENSE-APACHE", include_str!("../LICENSE-APACHE"), None),
 ];
 
 impl ControllerFile {
+    /// Where [`write_files`] puts the file, relative to its folder: `SensorInterface/` and
+    /// `Program/` mirror the targets on the robot, so the pendant can copy a whole folder; the
+    /// licenses stay at the top.
+    pub fn local_path(&self) -> PathBuf {
+        match self.robot_dir {
+            Some(SENSOR_INTERFACE_DIR) => Path::new("SensorInterface").join(self.name),
+            Some(PROGRAM_DIR) => Path::new("Program").join(self.name),
+            _ => PathBuf::from(self.name),
+        }
+    }
+
     /// The bytes to copy onto the controller: the KRL programs with CRLF line endings (as the
     /// controller's own editor writes them), every other file as shipped.
     pub fn robot_bytes(&self) -> Vec<u8> {
@@ -47,13 +60,21 @@ impl ControllerFile {
     }
 }
 
-/// Write every bundled file ([`ControllerFile::robot_bytes`]) into `dir` (created if missing),
-/// overwriting files of the same name. Returns the written paths in the order of [`FILES`].
+/// Write every bundled file ([`ControllerFile::robot_bytes`]) into `dir` (created if missing) at
+/// its [`ControllerFile::local_path`], overwriting files of the same name:
+///
+/// ```text
+/// dir/SensorInterface/  Ethernet configs and RSI contexts  -> C:\KRC\ROBOTER\Config\User\Common\SensorInterface\
+/// dir/Program/          KRL programs (CRLF)                -> KRC:\R1\Program\
+/// dir/LICENSE-*         stay on the PC
+/// ```
+///
+/// Returns the written paths in the order of [`FILES`].
 ///
 /// On a FAT or exFAT USB stick, macOS stores extended attributes in an AppleDouble file
 /// `._<name>` next to every file and folder it writes; the controller would show them as broken
-/// programs and configs. They are removed for every file written, for `dir` and for the folders
-/// created above it. No other files are touched.
+/// programs and configs. They are removed for every file and subfolder written, for `dir` and
+/// for the folders created above it. No other files are touched.
 pub fn write_files(dir: &Path) -> io::Result<Vec<PathBuf>> {
     let created: Vec<PathBuf> =
         dir.ancestors().take_while(|d| !d.as_os_str().is_empty() && !d.exists()).map(Path::to_path_buf).collect();
@@ -61,12 +82,18 @@ pub fn write_files(dir: &Path) -> io::Result<Vec<PathBuf>> {
     let paths = FILES
         .iter()
         .map(|f| {
-            let path = dir.join(f.name);
+            let path = dir.join(f.local_path());
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
             std::fs::write(&path, f.robot_bytes())?;
             Ok(path)
         })
         .collect::<io::Result<Vec<_>>>()?;
-    for p in paths.iter().map(PathBuf::as_path).chain([dir]).chain(created.iter().map(PathBuf::as_path)) {
+    let subfolders: Vec<PathBuf> = ["SensorInterface", "Program"].iter().map(|d| dir.join(d)).collect();
+    for p in
+        paths.iter().chain(&subfolders).map(PathBuf::as_path).chain([dir]).chain(created.iter().map(PathBuf::as_path))
+    {
         remove_appledouble(p)?;
     }
     Ok(paths)
