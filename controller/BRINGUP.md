@@ -105,18 +105,45 @@ Pass: the robot does not move, `delay` stays 0, after 60 s the program ends with
 A rising `delay` means the Mac answers late; the robot stops with an RSI communication error
 (safe), and a Linux PC with a real-time setup would be the next step.
 
-## 7. Test 3: 2° on A6
+## 7. Test 3: move A6
 
-T1, 10 % override, the tool cable free to follow A6 by 2°. PC first:
+T1, the tool cable free to follow A6. PC first:
 
 ```bash
-kuka-rsi/target/release/examples/jog kuka-rsi/controller/kuka_rsi_ethernet.xml
+kuka-rsi/target/release/examples/jog kuka-rsi/controller/kuka_rsi_ethernet.xml --deg 45 --secs 10
 ```
 
-Then start `kuka_rsi`. Pass: A6 turns 2° over 2 s and back, the stats print, the program ends
-cleanly.
+Then start `kuka_rsi`. A6 turns `--deg` (default 2, at most 45) over `--secs` and back;
+playback follows the pendant override, so 10 % takes ten times as long. Pass: the printed
+measured A6 angle reaches start + `--deg` and returns, the stats show no clamps and no late
+replies, the program ends cleanly. 2° is hard to see on the robot; 45° over 10 s is clear.
 
 Next: `stream_trajectory` (±3° sine on A6), then checklist steps 4 to 6 in `README.md`.
+
+## Notes from the first bring-up (2026-11-05)
+
+- Ping the controller (`ping 192.168.10.147`) right before a closed-loop run. The first test 2
+  failed with every reply counted late (robot `Delay` +1 per cycle, stop after 100 cycles,
+  pendant `KSS00489 Stop by $CORRECTION function`, originator A2), while the same replies were
+  accepted right after a ping. Likely cause: the Mac's ARP entry for the controller had expired
+  (20 min), since receiving the robot's telegrams does not refresh it. Not proven.
+- `KSS00489 Stop by $CORRECTION function` is how the controller reports RSI stopping the
+  correction, e.g. after the ETHERNET timeout; it does not by itself mean a bad correction value.
+  Confirm, then Edit > Reset program (block selection), or the next start resumes at
+  `RSI_MOVECORR()` without RSI and stops at once.
+- After `MoveStop` the program runs `RSI_OFF`, `RSI_DELETE` and waits at the final
+  `PTP $AXIS_ACT` for Start; that is the normal end.
+- The robot's `Delay` went 0, 1, 0: it counts current late packets, not a running total.
+- The USB Ethernet link dropped once mid-session (`ifconfig en7` showed `status: inactive`, then
+  ARP `incomplete`); reseat the adapter and cable if the robot stops answering pings.
+
+Results (Mac, macOS, USB 1 Gbit adapter, Python-free Rust driver):
+
+| Test | Result |
+| --- | --- |
+| 1 monitor, 60 s | 14,993 telegrams at 250 Hz, IPOC +4 per telegram, joints equal to the pendant, 7 late reads by the Mac (max 10 ms) |
+| 2 hold, 60 s | 14,996 replies, 1 late (6.8 ms), mean latency 0.13 ms, robot `Delay` 0, clean `MoveStop` end |
+| 3 A6 +45° / 10 s and back | measured A6 −286.847 → −241.846 → −286.849°, 5,152 replies, 0 late, max latency 0.96 ms, no clamps |
 
 ## Troubleshooting
 
