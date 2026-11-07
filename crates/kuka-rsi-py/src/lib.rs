@@ -499,10 +499,10 @@ impl Drop for PyDriver {
 #[pymethods]
 impl PyDriver {
     #[new]
-    #[pyo3(signature = (config, *, bind=None, limits=None, stop_channel=None, link_timeout=0.5, rt_priority=true, cycle_ms=4.0, wait=60.0))]
+    #[pyo3(signature = (config=None, *, bind=None, limits=None, stop_channel=None, link_timeout=0.5, rt_priority=true, cycle_ms=4.0, wait=60.0))]
     #[allow(clippy::too_many_arguments)]
     fn new(
-        config: &str,
+        config: Option<std::path::PathBuf>,
         bind: Option<&str>,
         limits: Option<&PyLimits>,
         stop_channel: Option<&str>,
@@ -511,7 +511,7 @@ impl PyDriver {
         cycle_ms: f64,
         wait: f64,
     ) -> PyResult<Self> {
-        let mut cfg = DriverConfig::from_ethernet_xml(config).map_err(to_py)?;
+        let mut cfg = DriverConfig::new(EthernetConfig::from_path_or_shipped(config.as_deref()).map_err(to_py)?);
         if let Some(b) = bind {
             cfg = cfg.bind(parse_addr(b, "bind")?);
         }
@@ -694,11 +694,11 @@ fn check_dict<'py>(py: Python<'py>, c: &kuka_rsi::doctor::Check) -> PyResult<Bou
 /// a background thread, so Ctrl-C (KeyboardInterrupt) cancels the live wait and still ends the
 /// robot program cleanly.
 #[pyfunction]
-#[pyo3(signature = (config, *, robot=None, bind=None, wait=0.0, hold=3.0, stop_channel="MoveStop", report=None))]
+#[pyo3(signature = (config=None, *, robot=None, bind=None, wait=0.0, hold=3.0, stop_channel="MoveStop", report=None))]
 #[allow(clippy::too_many_arguments)]
 fn check_setup<'py>(
     py: Python<'py>,
-    config: std::path::PathBuf,
+    config: Option<std::path::PathBuf>,
     robot: Option<&str>,
     bind: Option<&str>,
     wait: f64,
@@ -706,7 +706,7 @@ fn check_setup<'py>(
     stop_channel: &str,
     report: Option<Bound<'py, PyAny>>,
 ) -> PyResult<Vec<Bound<'py, PyDict>>> {
-    let mut opts = kuka_rsi::doctor::Options::new(config);
+    let mut opts = kuka_rsi::doctor::Options { config, ..Default::default() };
     opts.robot = robot.map(|r| r.parse()).transpose().map_err(|e| PyValueError::new_err(format!("robot: {e}")))?;
     opts.bind = bind.map(|b| b.parse()).transpose().map_err(|e| PyValueError::new_err(format!("bind: {e}")))?;
     opts.wait = Duration::from_secs_f64(wait.max(0.0));

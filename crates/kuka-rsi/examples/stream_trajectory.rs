@@ -1,6 +1,6 @@
 //! Stream a multi-axis sine the way a policy would: every 100 ms the next 0.5 s of the path as
 //! five points, replacing what was queued. Usage:
-//!   cargo run --example stream_trajectory -- controller/kuka_rsi_ethernet.xml [--axes 6] [--amp 3]
+//!   cargo run --example stream_trajectory -- [controller/kuka_rsi_ethernet.xml] [--axes 6] [--amp 3]
 //!       [--period 4] [--secs 8] [--stop-after S] [--speed 20] [--log run.csv] [--bind ADDR]
 //!
 //! Each axis in `--axes` (comma-separated, e.g. `1,3,6`) swings ±`--amp` degrees around the
@@ -15,13 +15,13 @@ use std::f64::consts::TAU;
 use std::time::{Duration, Instant};
 
 use kuka_rsi::Error;
-use kuka_rsi::config::{DriverConfig, Limits};
+use kuka_rsi::config::{DriverConfig, EthernetConfig, Limits};
 use kuka_rsi::driver::Driver;
 use kuka_rsi::record::CsvLog;
 use kuka_rsi::state::RobotState;
 use kuka_rsi::stats::Stats;
 
-const USAGE: &str = "usage: stream_trajectory <ethernet.xml> [--axes 6] [--amp 3] [--period 4] [--secs 8] \
+const USAGE: &str = "usage: stream_trajectory [ethernet.xml] [--axes 6] [--amp 3] [--period 4] [--secs 8] \
                      [--stop-after S] [--speed 20] [--log FILE] [--bind ADDR]";
 const CAP_DEG: [f64; 6] = [30.0, 30.0, 30.0, 30.0, 30.0, 45.0];
 const MAX_SPEED_DEG_S: f64 = 30.0;
@@ -60,9 +60,10 @@ fn smoothstep(x: f64) -> f64 {
     x * x * (3.0 - 2.0 * x)
 }
 
-fn parse_args(args: &[String]) -> Result<(String, Plan), String> {
-    let mut it = args.iter();
-    let config = it.next().ok_or(USAGE)?.clone();
+fn parse_args(args: &[String]) -> Result<(Option<String>, Plan), String> {
+    let mut it = args.iter().peekable();
+    // The config file is optional (default: the built-in kuka_rsi_ethernet.xml).
+    let config = it.next_if(|a| !a.starts_with("--")).cloned();
     let mut p = Plan {
         axes: vec![5],
         amp_deg: 3.0,
@@ -165,7 +166,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (config, plan) = parse_args(&args)?;
-    let mut cfg = DriverConfig::from_ethernet_xml(&config)?
+    let eth = EthernetConfig::from_path_or_shipped(config.as_deref().map(std::path::Path::new))?;
+    println!("config: {}", config.as_deref().unwrap_or("built-in kuka_rsi_ethernet.xml"));
+    let mut cfg = DriverConfig::new(eth)
         .limits(Limits::kr10_defaults().with_max_velocity_all(plan.speed_deg_s.to_radians()))
         .stop_channel("MoveStop");
     if let Some(b) = &plan.bind {
@@ -259,6 +262,14 @@ mod tests {
 
     fn args(s: &str) -> Vec<String> {
         std::iter::once("cfg.xml").chain(s.split_whitespace()).map(String::from).collect()
+    }
+
+    #[test]
+    fn the_config_file_is_optional() {
+        assert_eq!(parse_args(&args("")).unwrap().0.as_deref(), Some("cfg.xml"));
+        let flags: Vec<String> = ["--axes", "1", "--amp", "5"].map(String::from).into();
+        let (config, p) = parse_args(&flags).unwrap();
+        assert_eq!((config, p.axes, p.amp_deg), (None, vec![0], 5.0));
     }
 
     #[test]

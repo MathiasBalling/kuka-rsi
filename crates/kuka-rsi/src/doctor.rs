@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
-use crate::config::DriverConfig;
+use crate::config::{DriverConfig, EthernetConfig};
 use crate::driver::Driver;
 use crate::state::SessionState;
 use crate::stats::Stats;
@@ -73,8 +73,9 @@ pub enum Progress<'a> {
 
 #[derive(Clone, Debug)]
 pub struct Options {
-    /// The RSI Ethernet config XML, the same file as on the robot.
-    pub config: PathBuf,
+    /// The RSI Ethernet config XML, the same file as on the robot; `None` checks the shipped one
+    /// ([`EthernetConfig::shipped`](crate::config::EthernetConfig::shipped)).
+    pub config: Option<PathBuf>,
     /// Bind address override; default `IP_NUMBER:PORT` from the config.
     pub bind: Option<SocketAddr>,
     /// The robot's RSI address (the KLI sensor interface); enables the route and ping checks.
@@ -89,10 +90,11 @@ pub struct Options {
     pub cancel: Option<Arc<AtomicBool>>,
 }
 
-impl Options {
-    pub fn new(config: impl Into<PathBuf>) -> Options {
+impl Default for Options {
+    /// The shipped config, no robot address, no live checks.
+    fn default() -> Options {
         Options {
-            config: config.into(),
+            config: None,
             bind: None,
             robot: None,
             wait: Duration::ZERO,
@@ -100,6 +102,13 @@ impl Options {
             stop_channel: "MoveStop".into(),
             cancel: None,
         }
+    }
+}
+
+impl Options {
+    /// [`Options::default`] with the config file at `config`.
+    pub fn new(config: impl Into<PathBuf>) -> Options {
+        Options { config: Some(config.into()), ..Options::default() }
     }
 
     fn cancelled(&self) -> bool {
@@ -161,18 +170,22 @@ pub fn run(opts: &Options, mut report: impl FnMut(Progress)) -> Vec<Check> {
 }
 
 fn config(opts: &Options) -> (Option<DriverConfig>, Check) {
-    let cfg = match DriverConfig::from_ethernet_xml(&opts.config) {
-        Ok(c) => c,
+    let source = match &opts.config {
+        Some(p) => p.display().to_string(),
+        None => "built-in kuka_rsi_ethernet.xml".to_string(),
+    };
+    let cfg = match EthernetConfig::from_path_or_shipped(opts.config.as_deref()) {
+        Ok(e) => DriverConfig::new(e),
         Err(e) => {
-            let c = Check::new("config", Status::Fail, format!("{}: {e}", opts.config.display())).hint(
-                "Pass the RSI Ethernet config the robot uses (kuka_rsi_ethernet.xml); \
-                 `python -m kuka_rsi.controller DIR` writes the shipped one.",
+            let c = Check::new("config", Status::Fail, format!("{source}: {e}")).hint(
+                "Pass the RSI Ethernet config the robot uses, or leave it out to check the built-in \
+                 kuka_rsi_ethernet.xml (`python -m kuka_rsi.controller DIR` writes it).",
             );
             return (None, c);
         }
     };
     let e = &cfg.ethernet;
-    let mut detail = format!("IP_NUMBER {}, PORT {}, SENTYPE {}", e.ip_number, e.port, e.sentype);
+    let mut detail = format!("{source}: IP_NUMBER {}, PORT {}, SENTYPE {}", e.ip_number, e.port, e.sentype);
     if e.onlysend {
         detail.push_str(", ONLYSEND (monitor only, no replies)");
         return (Some(cfg), Check::new("config", Status::Pass, detail));

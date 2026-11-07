@@ -188,6 +188,17 @@ impl EthernetConfig {
         Self::from_str(&text)
     }
 
+    /// The config this crate ships and `controller::write_files` puts on the robot
+    /// (`kuka_rsi_ethernet.xml`: `IP_NUMBER` 192.168.10.10, `PORT` 49152), built into the library.
+    pub fn shipped() -> Result<Self> {
+        Self::from_str(crate::controller::ETHERNET_XML)
+    }
+
+    /// The file at `path`, or [`EthernetConfig::shipped`] without one.
+    pub fn from_path_or_shipped(path: Option<&Path>) -> Result<Self> {
+        path.map_or_else(Self::shipped, Self::from_path)
+    }
+
     /// Number of numbered channels (elements whose `INDX` is not `INTERNAL`).
     pub fn channels(elements: &[Element]) -> usize {
         elements.iter().filter(|e| matches!(e.indx, Index::Channel(_))).count()
@@ -393,6 +404,11 @@ impl DriverConfig {
 
     pub fn from_ethernet_xml(path: impl AsRef<Path>) -> Result<DriverConfig> {
         Ok(DriverConfig::new(EthernetConfig::from_path(path)?))
+    }
+
+    /// Driver defaults with the shipped Ethernet config ([`EthernetConfig::shipped`]).
+    pub fn shipped() -> Result<DriverConfig> {
+        Ok(DriverConfig::new(EthernetConfig::shipped()?))
     }
 
     pub fn bind(mut self, addr: SocketAddr) -> Self {
@@ -634,6 +650,16 @@ mod tests {
         assert!(l.check_position(&q).unwrap_err().to_string().contains("A1"));
         q[0] = f64::INFINITY;
         assert!(l.check_position(&q).is_err());
+    }
+
+    #[test]
+    fn shipped_config_is_the_bundled_file() {
+        assert_eq!(EthernetConfig::shipped().unwrap(), EthernetConfig::from_str(SHIPPED).unwrap());
+        assert_eq!(DriverConfig::shipped().unwrap().bind_addr().unwrap().to_string(), "192.168.10.10:49152");
+        let none: Option<&Path> = None;
+        assert_eq!(EthernetConfig::from_path_or_shipped(none).unwrap(), EthernetConfig::shipped().unwrap());
+        let err = EthernetConfig::from_path_or_shipped(Some(Path::new("/nonexistent.xml"))).unwrap_err();
+        assert!(err.to_string().contains("/nonexistent.xml"));
     }
 
     #[test]

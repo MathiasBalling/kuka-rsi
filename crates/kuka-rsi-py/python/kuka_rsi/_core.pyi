@@ -96,7 +96,7 @@ class Stats:
 class Driver:
     def __init__(
         self,
-        config: str,
+        config: str | os.PathLike[str] | None = None,
         *,
         bind: str | None = None,
         limits: Limits | None = None,
@@ -105,7 +105,9 @@ class Driver:
         rt_priority: bool = True,
         cycle_ms: float = 4.0,
         wait: float = 60.0,
-    ) -> None: ...
+    ) -> None:
+        """Start the driver for the RSI Ethernet config XML at `config`, the same file as on the
+        robot; None uses the built-in copy of the shipped kuka_rsi_ethernet.xml."""
     def local_addr(self) -> str: ...
     def robot_addr(self) -> str | None:
         """The robot's address ("ip:port") during a session, else None."""
@@ -204,7 +206,7 @@ def write_controller_files(directory: str | os.PathLike[str]) -> list[pathlib.Pa
     """Write the bundled controller files into `directory`; see kuka_rsi.controller.write_files."""
 
 def check_setup(
-    config: str | os.PathLike[str],
+    config: str | os.PathLike[str] | None = None,
     *,
     robot: str | None = None,
     bind: str | None = None,
@@ -213,8 +215,9 @@ def check_setup(
     stop_channel: str = "MoveStop",
     report: Callable[[dict[str, Any]], object] | None = None,
 ) -> list[dict[str, Any]]:
-    """Check the config, network address and port, route and ping to `robot`, real-time
-    priority and, with `wait` > 0, the live link and its timing.
+    """Check the config (None: the built-in kuka_rsi_ethernet.xml), network address and port,
+    route and ping to `robot`, real-time priority and, with `wait` > 0, the live link and its
+    timing.
 
     Returns one dict per check: name, status ("pass", "warn", "fail", "skip"), detail, hint.
     `report` gets each check as it completes (with "event": "check") and, when the live check

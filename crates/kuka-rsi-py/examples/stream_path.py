@@ -1,6 +1,6 @@
 """Stream a multi-axis sine the way a policy would, from Python.
 
-    python examples/stream_path.py kuka_rsi_ethernet.xml [--axes 6] [--amp 3] [--period 4]
+    python examples/stream_path.py [kuka_rsi_ethernet.xml] [--axes 6] [--amp 3] [--period 4]
         [--secs 8] [--stop-after S] [--speed 20] [--log run.csv] [--bind ADDR]
 
 The same path and checks as the Rust example `stream_trajectory`: every 100 ms the next 0.5 s
@@ -46,7 +46,7 @@ def offset_deg(a: argparse.Namespace, t: float) -> np.ndarray:
 
 def parse(argv: list[str] | None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("config")
+    ap.add_argument("config", nargs="?", help="RSI Ethernet config XML; default: the built-in kuka_rsi_ethernet.xml")
     ap.add_argument("--axes", default="6")
     ap.add_argument("--amp", type=float, default=3.0)
     ap.add_argument("--period", type=float, default=4.0)

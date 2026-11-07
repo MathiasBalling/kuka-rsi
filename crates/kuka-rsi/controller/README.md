@@ -53,10 +53,10 @@ RSI needs its own sensor network, separate from the EKI addresses (`172.31.1.x`)
 1. `kuka_rsi_monitor.src` with `rsi-monitor --config controller/kuka_rsi_monitor.xml`:
    telegrams at 250 Hz, `Delay` 0, joint angles match the pendant. Save a few raw
    telegrams into `crates/kuka-rsi/tests/fixtures/` for the parser tests.
-2. `kuka_rsi.src` in T1 with `rsi-monitor --config controller/kuka_rsi_ethernet.xml`:
+2. `kuka_rsi.src` in T1 with `rsi-monitor` (built-in `kuka_rsi_ethernet.xml`):
    the robot holds, `AK` stays 0, `Delay` stays 0 for a minute, `close()` ends the
    program cleanly.
-3. `cargo run --example jog -- controller/kuka_rsi_ethernet.xml` in T1 at 10 % override:
+3. `cargo run --example jog` in T1 at 10 % override:
    A6 moves 2° and back; tracking error and clamp counters stay quiet; playback slows
    with the override.
 4. `cargo run --example stream_trajectory -- ...`, then a recorded path

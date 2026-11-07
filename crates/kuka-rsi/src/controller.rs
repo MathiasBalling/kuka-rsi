@@ -23,10 +23,14 @@ const fn file(name: &'static str, contents: &'static str, robot_dir: Option<&'st
     ControllerFile { name, contents, robot_dir }
 }
 
-/// The Ethernet config `kuka_rsi_ethernet.xml` is also the driver's telegram definition: pass its
-/// path to `DriverConfig::from_ethernet_xml` (after editing `IP_NUMBER`).
+/// The shipped Ethernet config `kuka_rsi_ethernet.xml`. It is also the driver's telegram
+/// definition and its default: [`crate::config::EthernetConfig::shipped`] parses this text.
+pub const ETHERNET_XML: &str = include_str!("../controller/kuka_rsi_ethernet.xml");
+
+/// Every bundled file. A copy of `kuka_rsi_ethernet.xml` with another `IP_NUMBER` must also be
+/// passed to the driver (`DriverConfig::from_ethernet_xml`), since the default is this one.
 pub const FILES: &[ControllerFile] = &[
-    file("kuka_rsi_ethernet.xml", include_str!("../controller/kuka_rsi_ethernet.xml"), Some(SENSOR_INTERFACE_DIR)),
+    file("kuka_rsi_ethernet.xml", ETHERNET_XML, Some(SENSOR_INTERFACE_DIR)),
     file("kuka_rsi_monitor.xml", include_str!("../controller/kuka_rsi_monitor.xml"), Some(SENSOR_INTERFACE_DIR)),
     file("kuka_rsi.rsix", include_str!("../controller/kuka_rsi.rsix"), Some(SENSOR_INTERFACE_DIR)),
     file("kuka_rsi_monitor.rsix", include_str!("../controller/kuka_rsi_monitor.rsix"), Some(SENSOR_INTERFACE_DIR)),

@@ -30,6 +30,10 @@ real robot.
   `python -m kuka_rsi.doctor`): config, address, port, route, ping, real-time priority,
   firewall, and the live link with its timing. `Driver::robot_addr` reports the robot's
   address during a session.
+- The shipped `kuka_rsi_ethernet.xml` is built in and is the default config everywhere:
+  `rsi-monitor`, `rsi-doctor`, `rsi-sim` without `--config`, `jog` and `stream_trajectory`
+  without a file, `Driver()` and `check_setup()` without one, and
+  `EthernetConfig::shipped`, `DriverConfig::shipped` and `doctor::Options::default` in Rust.
 - Python bindings (`kuka_rsi`, one abi3 wheel per platform for CPython 3.10+, numpy
   1.24+) with type stubs.
 - Controller files for KR C5 / KSS 8.7: RSI contexts, Ethernet configs and KRL programs,

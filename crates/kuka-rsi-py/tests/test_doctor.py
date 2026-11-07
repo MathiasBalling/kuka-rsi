@@ -33,6 +33,13 @@ def test_offline_checks_on_loopback(tmp_path):
     assert [e["name"] for e in seen if e["event"] == "check"] == [x["name"] for x in checks]
 
 
+def test_without_a_config_the_built_in_one_is_checked():
+    checks = kuka_rsi.check_setup(bind=f"127.0.0.1:{free_port()}")
+    c = by_name(checks)["config"]
+    assert c["status"] == "pass", c
+    assert c["detail"].startswith("built-in kuka_rsi_ethernet.xml: IP_NUMBER 192.168.10.10"), c
+
+
 def test_missing_config_fails(tmp_path):
     checks = kuka_rsi.check_setup(str(tmp_path / "missing.xml"))
     assert [(c["name"], c["status"]) for c in checks] == [("config", "fail")]

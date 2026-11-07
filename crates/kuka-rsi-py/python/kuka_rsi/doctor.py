@@ -1,6 +1,8 @@
 """Check the PC side of an RSI setup and, with --wait, the live link to the robot.
 
-    python -m kuka_rsi.doctor --config kuka_rsi_ethernet.xml --robot 192.168.10.147 --wait 30
+    python -m kuka_rsi.doctor --robot 192.168.10.147 --wait 30
+
+Without --config it checks the built-in kuka_rsi_ethernet.xml, the file the package ships.
 
 With --wait, start kuka_rsi (or kuka_rsi_monitor) on the pendant when asked. The doctor holds
 the robot where it stands for --hold seconds, then ends the program (MoveStop).
@@ -33,7 +35,9 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="python -m kuka_rsi.doctor", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("--config", required=True, help="RSI Ethernet config XML, the same file as on the robot")
+    ap.add_argument(
+        "--config", help="RSI Ethernet config XML, the same file as on the robot; default: the built-in kuka_rsi_ethernet.xml"
+    )
     ap.add_argument("--robot", help="the robot's RSI address, for the route and ping checks")
     ap.add_argument("--bind", help="bind address override; default IP_NUMBER:PORT from the config")
     ap.add_argument("--wait", type=float, default=0.0, help="seconds to wait for the robot; 0 skips the live checks")

@@ -24,7 +24,8 @@ fn sim_runs_for_a_fixed_number_of_cycles() {
 }
 
 /// Ctrl-C in `rsi-monitor` must end the robot program cleanly (MoveStop pulse), not leave the
-/// robot to time out. The simulator plays the robot and reports how its session ended.
+/// robot to time out. The simulator plays the robot and reports how its session ended. The
+/// monitor runs without `--config`, on the built-in copy of the file the simulator reads.
 #[cfg(unix)]
 #[test]
 fn ctrl_c_in_monitor_pulses_move_stop() {
@@ -36,7 +37,7 @@ fn ctrl_c_in_monitor_pulses_move_stop() {
     let cfg = concat!(env!("CARGO_MANIFEST_DIR"), "/controller/kuka_rsi_ethernet.xml");
     let addr = "127.0.0.1:49981";
     let mut monitor = Command::new(env!("CARGO_BIN_EXE_rsi-monitor"))
-        .args(["--config", cfg, "--bind", addr, "--wait", "10"])
+        .args(["--bind", addr, "--wait", "10"])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -54,6 +55,7 @@ fn ctrl_c_in_monitor_pulses_move_stop() {
             break;
         }
     };
+    wait_for("config: built-in kuka_rsi_ethernet.xml");
     wait_for("listening on");
     let sim = Command::new(env!("CARGO_BIN_EXE_rsi-sim"))
         .args(["--config", cfg, "--target", addr, "--max-cycles", "5000"])

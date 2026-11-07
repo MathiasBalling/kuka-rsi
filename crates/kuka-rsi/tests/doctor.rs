@@ -37,6 +37,16 @@ fn a_missing_config_stops_after_the_config_check() {
 }
 
 #[test]
+fn without_a_config_the_built_in_one_is_checked() {
+    let checks = run(&Options { bind: Some(free_loopback_port()), ..Options::default() });
+    let config = find(&checks, "config");
+    assert_eq!(config.status, Status::Pass, "{config:?}");
+    assert!(config.detail.starts_with("built-in kuka_rsi_ethernet.xml: IP_NUMBER 192.168.10.10"), "{config:?}");
+    let named = run(&Options::new(CONFIG));
+    assert!(find(&named, "config").detail.starts_with(CONFIG), "{named:#?}");
+}
+
+#[test]
 fn offline_checks_pass_on_loopback() {
     let mut opts = Options::new(CONFIG);
     opts.bind = Some(free_loopback_port());

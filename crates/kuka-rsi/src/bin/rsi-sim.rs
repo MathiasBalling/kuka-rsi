@@ -10,9 +10,10 @@ use kuka_rsi::sim::{ControllerSim, SimConfig};
 #[derive(Parser)]
 #[command(name = "rsi-sim", about = "Fake KUKA controller: sends <Rob> telegrams, expects <Sen> replies")]
 struct Args {
-    /// RSI Ethernet config XML (same file the driver reads)
+    /// RSI Ethernet config XML (same file the driver reads); default: the built-in
+    /// kuka_rsi_ethernet.xml
     #[arg(long)]
-    config: std::path::PathBuf,
+    config: Option<std::path::PathBuf>,
     /// Where to send telegrams; default IP_NUMBER:PORT from the config
     #[arg(long)]
     target: Option<SocketAddr>,
@@ -38,7 +39,7 @@ struct Args {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
     let a = Args::parse();
-    let eth = EthernetConfig::from_path(&a.config)?;
+    let eth = EthernetConfig::from_path_or_shipped(a.config.as_deref())?;
     let target = match a.target {
         Some(t) => t,
         None => SocketAddr::new(eth.ip_number.parse()?, eth.port),

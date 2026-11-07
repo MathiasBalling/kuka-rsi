@@ -183,6 +183,14 @@ def test_driver_dealloc_does_not_deadlock():
     assert proc.returncode == 0, proc.stderr
 
 
+def test_without_a_config_the_driver_uses_the_built_in_one():
+    drv = kuka_rsi.Driver(bind="127.0.0.1:0", rt_priority=False)
+    assert drv.local_addr().startswith("127.0.0.1:")
+    drv.close()
+    with pytest.raises(kuka_rsi.Error, match="nonexistent"):
+        kuka_rsi.Driver("/nonexistent/kuka_rsi_ethernet.xml", bind="127.0.0.1:0")
+
+
 def test_bad_durations_raise_value_error():
     drv = kuka_rsi.Driver(str(CONFIG), bind="127.0.0.1:0", rt_priority=False)
     with pytest.raises(ValueError):

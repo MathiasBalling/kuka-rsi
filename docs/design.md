@@ -298,7 +298,7 @@ extending it.
 use kuka_rsi::{Driver, DriverConfig, Limits};
 use std::time::Duration;
 
-let cfg = DriverConfig::from_ethernet_xml("controller/kuka_rsi_ethernet.xml")?
+let cfg = DriverConfig::shipped()?                    // or from_ethernet_xml(path) for another copy
     .limits(Limits::kr10_defaults().max_velocity_all(0.5))   // rad/s, bring-up value
     .stop_channel("MoveStop");
 let driver = Driver::spawn(cfg)?;                 // bound and listening
@@ -321,7 +321,7 @@ import numpy as np
 from kuka_rsi import Driver, Limits
 
 limits = Limits.kr10_defaults(max_velocity=np.radians(30))
-with Driver("controller/kuka_rsi_ethernet.xml", limits=limits, stop_channel="MoveStop") as robot:
+with Driver(limits=limits, stop_channel="MoveStop") as robot:  # or Driver(path, ...)
     # __enter__ spawned the thread and waited for the first telegram (timeout=60 s)
     state = robot.state()            # .q, .q_setpoint, .tcp, .torque: np.ndarray, .t, .ipoc, .delay, .override
     robot.move_to(q_start, duration=2.0, block=True)

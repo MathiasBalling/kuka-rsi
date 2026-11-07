@@ -4,16 +4,17 @@ use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use clap::Parser;
-use kuka_rsi::config::DriverConfig;
+use kuka_rsi::config::{DriverConfig, EthernetConfig};
 use kuka_rsi::driver::Driver;
 use kuka_rsi::state::rad2deg6;
 
 #[derive(Parser)]
 #[command(name = "rsi-monitor", about = "Connect to the robot (or rsi-sim) and print state and stats")]
 struct Args {
-    /// RSI Ethernet config XML
+    /// RSI Ethernet config XML; default: the built-in kuka_rsi_ethernet.xml (use
+    /// kuka_rsi_monitor.xml with the kuka_rsi_monitor program)
     #[arg(long)]
-    config: std::path::PathBuf,
+    config: Option<std::path::PathBuf>,
     /// Bind address override; default IP_NUMBER:PORT from the config
     #[arg(long)]
     bind: Option<SocketAddr>,
@@ -50,7 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let a = Args::parse();
-    let mut cfg = DriverConfig::from_ethernet_xml(&a.config)?;
+    let mut cfg = DriverConfig::new(EthernetConfig::from_path_or_shipped(a.config.as_deref())?);
     if let Some(b) = a.bind {
         cfg = cfg.bind(b);
     }
@@ -59,6 +60,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if !cfg.ethernet.onlysend && cfg.ethernet.receive.iter().any(|e| e.tag == a.stop_channel) {
         cfg = cfg.stop_channel(&a.stop_channel);
     }
+    println!(
+        "config: {}{}",
+        a.config.as_ref().map_or("built-in kuka_rsi_ethernet.xml".into(), |p| p.display().to_string()),
+        if cfg.ethernet.onlysend { " (ONLYSEND: the robot only sends)" } else { "" }
+    );
     let mut csv = a.log.as_ref().map(kuka_rsi::record::CsvLog::create).transpose()?;
     let mut states = Vec::new();
     let drv = std::sync::Arc::new(Driver::spawn(cfg)?);

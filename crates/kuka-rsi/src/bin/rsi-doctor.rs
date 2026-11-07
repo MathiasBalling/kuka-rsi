@@ -16,9 +16,10 @@ use kuka_rsi::doctor::{self, Options, Progress, Status};
                   holds the robot where it stands for --hold seconds, then ends the program (MoveStop)."
 )]
 struct Args {
-    /// RSI Ethernet config XML, the same file as on the robot
+    /// RSI Ethernet config XML, the same file as on the robot; default: the built-in
+    /// kuka_rsi_ethernet.xml
     #[arg(long)]
-    config: std::path::PathBuf,
+    config: Option<std::path::PathBuf>,
     /// The robot's RSI address (KLI sensor interface), for the route and ping checks
     #[arg(long)]
     robot: Option<IpAddr>,
@@ -43,7 +44,7 @@ fn main() -> std::process::ExitCode {
     if let Err(e) = ctrlc::set_handler(move || on_ctrl_c.store(true, Ordering::SeqCst)) {
         eprintln!("cannot install the Ctrl-C handler: {e}");
     }
-    let mut opts = Options::new(&a.config);
+    let mut opts = Options { config: a.config, ..Options::default() };
     opts.bind = a.bind;
     opts.robot = a.robot;
     opts.wait = Duration::from_secs_f64(a.wait.max(0.0));

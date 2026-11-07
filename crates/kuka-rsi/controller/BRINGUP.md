@@ -47,7 +47,8 @@ RSI gets its own subnet on the same KLI port and cable as EKI.
    the reboot.
 
 If `192.168.10.x` is taken, use another free subnet and change `IP_NUMBER` in both XML files to
-the PC's address on it before staging.
+the PC's address on it before staging. The tools have `kuka_rsi_ethernet.xml` built in, so
+rebuild them after the edit (or pass `--config controller/kuka_rsi_ethernet.xml`).
 
 ## 3. Mac: two static addresses on the robot adapter
 
@@ -73,8 +74,11 @@ Check the PC side: the config, the address and port, the route and a ping to the
 thread priority and the firewall:
 
 ```bash
-target/release/rsi-doctor --config controller/kuka_rsi_ethernet.xml --robot 192.168.10.147
+target/release/rsi-doctor --robot 192.168.10.147
 ```
+
+Without `--config` the tools use their built-in copy of `kuka_rsi_ethernet.xml`, the file
+staged for the robot; the doctor's config line says which one it checked.
 
 Each line reads PASS, WARN (works, but may bite later) or FAIL, with what to do. With the files
 on the controller (step 4), `--wait 60` adds the live checks: start `kuka_rsi` when the doctor
@@ -110,7 +114,7 @@ values.
 T1, low override. PC first:
 
 ```bash
-target/release/rsi-monitor --config controller/kuka_rsi_ethernet.xml --wait 300 --seconds 60 | tee ~/rsi_test2.log
+target/release/rsi-monitor --wait 300 --seconds 60 | tee ~/rsi_test2.log
 ```
 
 Then start `kuka_rsi` (in T1, hold the enabling switch and the Start key). At `RSI_ON` the
@@ -127,7 +131,7 @@ A rising `delay` means the Mac answers late; the robot stops with an RSI communi
 T1, the tool cable free to follow A6. PC first:
 
 ```bash
-target/release/examples/jog controller/kuka_rsi_ethernet.xml --deg 45 --secs 10
+target/release/examples/jog --deg 45 --secs 10
 ```
 
 Then start `kuka_rsi`. A6 turns `--deg` (default 2, at most 45) over `--secs` and back;

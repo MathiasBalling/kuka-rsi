@@ -1,6 +1,6 @@
 //! Move one or more axes from where the robot stands and back, and report how well it followed.
 //! Usage:
-//!   cargo run --example jog -- controller/kuka_rsi_ethernet.xml [--axis 6] [--deg 2]
+//!   cargo run --example jog -- [controller/kuka_rsi_ethernet.xml] [--axis 6] [--deg 2]
 //!       [--move A1=30,A3=-15] [--speed 10] [--secs S] [--repeat 1] [--log run.csv] [--bind ADDR]
 //!
 //! `--axis`/`--deg` move one axis (default A6 by 2°); `--move` moves several at once. Offsets
@@ -12,13 +12,13 @@
 use std::time::{Duration, Instant};
 
 use kuka_rsi::Error;
-use kuka_rsi::config::{DriverConfig, Limits};
+use kuka_rsi::config::{DriverConfig, EthernetConfig, Limits};
 use kuka_rsi::driver::Driver;
 use kuka_rsi::record::CsvLog;
 use kuka_rsi::state::RobotState;
 use kuka_rsi::stats::Stats;
 
-const USAGE: &str = "usage: jog <ethernet.xml> [--axis N] [--deg D] [--move A1=30,A3=-15] [--speed 10] [--secs S] \
+const USAGE: &str = "usage: jog [ethernet.xml] [--axis N] [--deg D] [--move A1=30,A3=-15] [--speed 10] [--secs S] \
                      [--repeat 1] [--log FILE] [--bind ADDR]";
 
 /// Largest offset per axis, degrees: what the cell allows around the usual pose.
@@ -59,9 +59,10 @@ fn default_secs(offsets_deg: &[f64; 6], speed_deg_s: f64) -> f64 {
     (1.875 * largest / speed_deg_s).max(1.0)
 }
 
-fn parse_args(args: &[String]) -> Result<(String, Plan), String> {
-    let mut it = args.iter();
-    let config = it.next().ok_or(USAGE)?.clone();
+fn parse_args(args: &[String]) -> Result<(Option<String>, Plan), String> {
+    let mut it = args.iter().peekable();
+    // The config file is optional (default: the built-in kuka_rsi_ethernet.xml).
+    let config = it.next_if(|a| !a.starts_with("--")).cloned();
     let (mut axis, mut deg, mut moves) = (None, None, None);
     let (mut speed, mut secs, mut repeat, mut log, mut bind) = (10.0, None, 1u32, None, None);
     while let Some(flag) = it.next() {
@@ -192,7 +193,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (config, plan) = parse_args(&args)?;
 
-    let mut cfg = DriverConfig::from_ethernet_xml(&config)?
+    let eth = EthernetConfig::from_path_or_shipped(config.as_deref().map(std::path::Path::new))?;
+    println!("config: {}", config.as_deref().unwrap_or("built-in kuka_rsi_ethernet.xml"));
+    let mut cfg = DriverConfig::new(eth)
         .limits(Limits::kr10_defaults().with_max_velocity_all(plan.speed_deg_s.to_radians()))
         .stop_channel("MoveStop");
     if let Some(b) = &plan.bind {
@@ -254,9 +257,18 @@ mod tests {
     #[test]
     fn defaults_move_a6_by_two_degrees_at_ten_degrees_per_second() {
         let (config, p) = parse_args(&args("")).unwrap();
-        assert_eq!(config, "cfg.xml");
+        assert_eq!(config.as_deref(), Some("cfg.xml"));
         assert_eq!(p.offsets_deg, [0.0, 0.0, 0.0, 0.0, 0.0, 2.0]);
         assert_eq!((p.speed_deg_s, p.secs, p.repeat), (10.0, 1.0, 1));
+    }
+
+    #[test]
+    fn the_config_file_is_optional() {
+        let flags: Vec<String> = ["--axis", "1", "--deg", "30"].map(String::from).into();
+        let (config, p) = parse_args(&flags).unwrap();
+        assert_eq!(config, None);
+        assert_eq!(p.offsets_deg[0], 30.0);
+        assert_eq!(parse_args(&[]).unwrap().0, None);
     }
 
     #[test]
@@ -297,6 +309,5 @@ mod tests {
         assert!(parse_args(&args("--move A1=0")).unwrap_err().contains("nothing"));
         assert!(parse_args(&args("--move A1=5 --axis 2")).is_err());
         assert!(parse_args(&args("--bogus 1")).is_err());
-        assert!(parse_args(&[]).is_err());
     }
 }

@@ -44,9 +44,11 @@ when writing to a FAT/exFAT stick. Without the package, from a checkout:
 `python3 controller/stage_usb.py robot_files/` writes the same tree.
 
 In Rust: `kuka_rsi::controller::write_files(Path::new("robot_files"))`, or
-`kuka_rsi::controller::FILES` for the contents. Set `IP_NUMBER` in
-`kuka_rsi_ethernet.xml` to the PC's address before copying it to the robot; the driver
-reads the same file as its config. [controller/README.md](https://github.com/MathiasBalling/kuka-rsi/blob/main/crates/kuka-rsi/controller/README.md)
+`kuka_rsi::controller::FILES` for the contents. `kuka_rsi_ethernet.xml` is also the
+driver's config: the tools and the library have the shipped copy built in (`IP_NUMBER`
+192.168.10.10, `PORT` 49152) and use it when no config is given. If the robot's copy differs,
+for example another `IP_NUMBER` for the PC, pass that file (`--config`, `Driver(path)`,
+`DriverConfig::from_ethernet_xml`). [controller/README.md](https://github.com/MathiasBalling/kuka-rsi/blob/main/crates/kuka-rsi/controller/README.md)
 covers installing them on the controller.
 
 ## Layout
@@ -79,9 +81,8 @@ robot for `--hold` seconds (default 3), reports the telegram rate, late replies 
 latency, then ends the program with `MoveStop`.
 
 ```bash
-cargo run -p kuka-rsi --features cli --bin rsi-doctor -- \
-    --config controller/kuka_rsi_ethernet.xml --robot 192.168.10.147 --wait 60
-python -m kuka_rsi.doctor --config kuka_rsi_ethernet.xml --robot 192.168.10.147 --wait 60
+cargo run -p kuka-rsi --features cli --bin rsi-doctor -- --robot 192.168.10.147 --wait 60
+python -m kuka_rsi.doctor --robot 192.168.10.147 --wait 60
 ```
 
 It exits non-zero if a check fails. In code: `kuka_rsi::doctor::run` (Rust) or
@@ -90,10 +91,8 @@ It exits non-zero if a check fails. In code: `kuka_rsi::doctor::run` (Rust) or
 ## Try it without the robot
 
 ```bash
-cargo run -p kuka-rsi --features cli --bin rsi-sim -- \
-    --config controller/kuka_rsi_ethernet.xml --target 127.0.0.1:49152 --lag 3
-cargo run -p kuka-rsi --example stream_trajectory -- \
-    controller/kuka_rsi_ethernet.xml --bind 127.0.0.1:49152
+cargo run -p kuka-rsi --features cli --bin rsi-sim -- --target 127.0.0.1:49152 --lag 3
+cargo run -p kuka-rsi --example stream_trajectory -- --bind 127.0.0.1:49152
 ```
 
 ## Python
@@ -103,7 +102,7 @@ import numpy as np
 from kuka_rsi import Driver, Limits
 
 limits = Limits.kr10_defaults(max_velocity=np.radians(30))
-with Driver("controller/kuka_rsi_ethernet.xml", limits=limits, stop_channel="MoveStop") as robot:
+with Driver(limits=limits, stop_channel="MoveStop") as robot:   # built-in kuka_rsi_ethernet.xml
     state = robot.state()                       # .q, .q_setpoint, .tcp, .torque (numpy), .t, .ipoc, .delay
     robot.move_to(state.q + np.radians([0, 0, 0, 0, 0, 2]), duration=2.0, block=True)
     for chunk in policy():                      # (n, 6) absolute joint targets, radians
