@@ -106,13 +106,18 @@ fn stream_tracks_a_sine_and_stays_on_time() {
         assert!(wait_until(Duration::from_secs(10), || drv.stats().queue_len <= 5), "{:?}", drv.stats());
         drv.stream(&points, dt, false).unwrap();
     }
-    drv.wait_idle(Duration::from_secs(30)).unwrap();
+    // 7.5 s of path is 1875 cycles; stretched to 15 ms each they take 28 s.
+    drv.wait_idle(Duration::from_secs(120)).unwrap();
     let st = settled(&drv, &sim);
     assert!((st.q_setpoint_deg[0] - last[0].to_degrees()).abs() < 0.01, "{st:?} vs {}", last[0].to_degrees());
     let s = drv.stats();
     assert!(s.replies > 200, "{s:?}");
     assert!(s.ipoc_gaps <= s.skipped_datagrams, "IPOC steps of one cycle are not gaps: {s:?}");
-    assert!(st.late as u64 * 20 < st.cycles, "late replies: {st:?}");
+    // The simulator's late count is about the driver only while the simulator keeps its own
+    // schedule: a late wake-up of its loop shortens the next reply window.
+    if st.overruns * 10 <= st.cycles {
+        assert!(st.late as u64 * 20 < st.cycles, "late replies: {st:?}");
+    }
     assert_eq!(drv.session(), SessionState::Active);
 }
 
@@ -218,7 +223,7 @@ fn move_to_reaches_the_target_smoothly() {
     std::thread::sleep(Duration::from_millis(12));
     let early = drv.state().q_command[5] - (q[5] - 0.03);
     assert!(early < 0.005, "quintic start is slow: {early}");
-    drv.wait_idle(Duration::from_secs(2)).unwrap();
+    drv.wait_idle(Duration::from_secs(10)).unwrap();
     assert!((settled(&drv, &sim).q_setpoint_deg[5] - q[5].to_degrees()).abs() < 1e-6);
 }
 
@@ -236,7 +241,7 @@ fn stream_with_non_integer_cycle_spacing_keeps_rate() {
         .collect();
     let last = points[59];
     drv.stream(&points, Duration::from_millis(6), false).unwrap(); // 1.5 cycles per point
-    drv.wait_idle(Duration::from_secs(2)).unwrap();
+    drv.wait_idle(Duration::from_secs(10)).unwrap();
     // Played cycles from the log: from the first cycle off the start pose to the first at the last target.
     let mut log = Vec::new();
     drv.drain_log(&mut log);
@@ -269,7 +274,7 @@ fn wait_idle_waits_for_the_limiter() {
     let mut q = drv.state().q;
     q[0] += 0.2; // one cycle of playback, then 25 cycles at the 2 rad/s velocity limit
     drv.stream(&[q], Duration::from_millis(4), false).unwrap();
-    drv.wait_idle(Duration::from_secs(2)).unwrap();
+    drv.wait_idle(Duration::from_secs(10)).unwrap();
     let st = drv.state();
     assert!((st.q_command[0] - q[0]).abs() < 1e-9, "wait_idle returned while the command was still moving: {st:?}");
 }
@@ -447,7 +452,8 @@ fn concurrent_streams_do_not_interleave() {
             });
         }
     });
-    drv.wait_idle(Duration::from_secs(5)).unwrap();
+    // 200 points 8 ms apart are 400 cycles: 1.6 s, or 6 s when a CI VM stretches them to 15 ms.
+    drv.wait_idle(Duration::from_secs(30)).unwrap();
     assert_eq!(drv.stats().queue_len, 0);
     std::thread::sleep(Duration::from_millis(120));
     let ev = drv.events();
@@ -527,7 +533,7 @@ fn fault_is_visible_and_refuses_motion_until_the_next_session() {
     drv.wait_for_robot(Duration::from_secs(3)).unwrap();
     assert!(!drv.is_faulted());
     drv.stream(&[drv.state().q_command], Duration::from_millis(100), false).unwrap();
-    drv.wait_idle(Duration::from_secs(2)).unwrap();
+    drv.wait_idle(Duration::from_secs(10)).unwrap();
     drv.close().unwrap();
 }
 

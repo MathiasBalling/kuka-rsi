@@ -42,7 +42,12 @@ fn two_seconds_mostly_on_time() {
     assert!(stats.replies > 100, "{stats:?}");
     assert!(stats.replies + 2 >= status.cycles, "unanswered cycles: {stats:?} {status:?}");
     assert!(stats.late_replies * 50 <= stats.replies, "driver late: {stats:?}");
-    assert!((status.late as u64) * 50 <= status.cycles, "robot-side late: {status:?}");
+    // The simulator shortens a reply window when its own loop wakes late, so its late count
+    // says something about the driver only while it keeps its own schedule. A CI VM can overrun
+    // most cycles (120 of 151 seen on a macOS runner); the driver-side count above still holds.
+    if status.overruns * 10 <= status.cycles {
+        assert!((status.late as u64) * 50 <= status.cycles, "robot-side late: {status:?}");
+    }
     assert_eq!(stats.parse_errors, 0);
     assert_eq!(stats.io_errors, 0);
 }
