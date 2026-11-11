@@ -15,9 +15,8 @@ First bring-up, step by step (network, USB staging, first three tests): `BRINGUP
 | `kuka_rsi_monitor.src` | `KRC:\R1\Program\` | `RSI_ON`, `WAIT SEC 60`, no motion |
 
 Copy them with WorkVisual (drag into `SensorInterface` and `Program` in the project
-structure, deploy) or with a USB stick: `python -m kuka_rsi.controller DIR` or
-`python3 controller/stage_usb.py DIR` writes them into `DIR/SensorInterface/` and
-`DIR/Program/`, one folder per target. `RSI_CREATE` takes the context name without the
+structure, deploy) or with a USB stick: `rsi-files DIR` (or `python -m kuka_rsi.controller DIR`)
+writes them into `DIR/SensorInterface/` and `DIR/Program/`, one folder per target. `RSI_CREATE` takes the context name without the
 `.rsix` extension.
 
 Open both `.rsix` files once in RSIVisual (WorkVisual 6.0 + RSI 5.0 option) and save

@@ -14,12 +14,12 @@ every step in T1, hand on the enabling switch, someone at the E-stop.
 
 ```bash
 cargo build -p kuka-rsi --features cli --release --bins --examples
-python3 controller/stage_usb.py /Volumes/<STICK>/kuka_rsi_usb
+target/release/rsi-files /Volumes/<STICK>/kuka_rsi_usb
 ```
 
-The build puts `rsi-doctor` and `rsi-monitor` in `target/release/` and `jog` and `stream_trajectory` in
-`target/release/examples/`. `stage_usb.py` writes the same tree as `python -m kuka_rsi.controller`
-and removes the macOS `._*` files from the stick. The USB folder holds:
+The build puts `rsi-doctor`, `rsi-monitor` and `rsi-files` in `target/release/` and `jog` and
+`stream_trajectory` in `target/release/examples/`. `rsi-files` writes the same tree as
+`python -m kuka_rsi.controller` and removes the macOS `._*` files from the stick. The USB folder holds:
 
 | Folder | Goes to | Contents |
 | --- | --- | --- |

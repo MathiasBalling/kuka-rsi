@@ -47,6 +47,10 @@ required-features = ["cli"]
 name = "rsi-doctor"
 required-features = ["cli"]
 
+[[bin]]
+name = "rsi-files"
+required-features = ["cli"]
+
 [[example]]
 name = "jog"
 test = true

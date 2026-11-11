@@ -420,6 +420,7 @@ kuka-rsi/
 │   │   ├── src/sim/mod.rs
 │   │   ├── src/bin/rsi-sim.rs       # run the fake controller from the CLI
 │   │   ├── src/bin/rsi-monitor.rs   # print state and stats (ONLYSEND or full)
+│   │   ├── src/bin/rsi-files.rs     # write the controller files into a folder
 │   │   ├── examples/{jog,stream_trajectory}.rs
 │   │   └── tests/                   # integration and soak
 │   └── kuka-rsi-py/

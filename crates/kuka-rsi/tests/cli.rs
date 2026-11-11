@@ -12,6 +12,30 @@ fn binaries_print_help() {
     }
 }
 
+/// `rsi-files DIR` is `kuka_rsi::controller::write_files` on the command line: the same tree,
+/// and one line per file saying where it goes on the robot.
+#[test]
+fn rsi_files_writes_the_controller_files() {
+    use kuka_rsi::controller::FILES;
+
+    let dir = std::env::temp_dir().join(format!("kuka-rsi-files-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let out = Command::new(env!("CARGO_BIN_EXE_rsi-files")).arg(dir.join("usb")).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(text.lines().count(), FILES.len(), "{text}");
+    for f in FILES {
+        let path = dir.join("usb").join(f.local_path());
+        assert_eq!(std::fs::read(&path).unwrap(), f.robot_bytes(), "{}", f.name);
+        let line = format!("{}  ->  {}", path.display(), f.robot_dir.unwrap_or("(keep on the PC)"));
+        assert!(text.lines().any(|l| l == line), "no line {line:?} in:\n{text}");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    let no_dir = Command::new(env!("CARGO_BIN_EXE_rsi-files")).output().unwrap();
+    assert!(!no_dir.status.success(), "a folder is required");
+}
+
 #[test]
 fn sim_runs_for_a_fixed_number_of_cycles() {
     let cfg = concat!(env!("CARGO_MANIFEST_DIR"), "/controller/kuka_rsi_monitor.xml");

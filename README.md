@@ -40,8 +40,8 @@ robot_files/
 
 One folder per target, so on the pendant you can open a folder on the USB stick, Edit > Mark
 all, Edit > Copy and paste into the target. macOS AppleDouble files (`._name`) are removed
-when writing to a FAT/exFAT stick. Without the package, from a checkout:
-`python3 controller/stage_usb.py robot_files/` writes the same tree.
+when writing to a FAT/exFAT stick. Without Python, the `rsi-files` binary writes the same
+tree: `cargo run -p kuka-rsi --features cli --bin rsi-files -- robot_files/`.
 
 In Rust: `kuka_rsi::controller::write_files(Path::new("robot_files"))`, or
 `kuka_rsi::controller::FILES` for the contents. `kuka_rsi_ethernet.xml` is also the
@@ -53,8 +53,8 @@ covers installing them on the controller.
 
 ## Layout
 
-- `crates/kuka-rsi`: the library, the `rsi-sim`, `rsi-monitor` and `rsi-doctor` binaries (feature
-  `cli`), examples and tests.
+- `crates/kuka-rsi`: the library, the `rsi-sim`, `rsi-monitor`, `rsi-doctor` and `rsi-files`
+  binaries (feature `cli`), examples and tests.
 - `crates/kuka-rsi-py`: the `kuka_rsi` Python package (PyO3 + maturin).
 - `crates/kuka-rsi/controller/` (also reachable as `controller/`): files for the robot.
 

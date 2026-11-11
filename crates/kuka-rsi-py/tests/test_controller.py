@@ -7,7 +7,6 @@ from kuka_rsi import controller
 
 CRATE = pathlib.Path(__file__).resolve().parents[2] / "kuka-rsi"
 FOLDER = CRATE / "controller"
-STAGE_USB = FOLDER / "stage_usb.py"
 NAMES = [
     "kuka_rsi_ethernet.xml",
     "kuka_rsi_monitor.xml",
@@ -73,12 +72,3 @@ def test_module_cli_writes_the_files(tmp_path):
     ).stdout
     assert sorted(tree(tmp_path)) == sorted(local_path(f).as_posix() for f in controller.files())
     assert PROGRAM in out
-
-
-def test_stage_usb_writes_the_same_tree(tmp_path):
-    # stage_usb.py runs from a checkout without the package; both must give the robot the same bytes.
-    staged, written = tmp_path / "staged", tmp_path / "written"
-    subprocess.run([sys.executable, str(STAGE_USB), str(staged)], check=True, capture_output=True)
-    controller.write_files(written)
-    assert tree(staged) == tree(written)
-    assert sorted(tree(staged)) == sorted(local_path(f).as_posix() for f in controller.files())
