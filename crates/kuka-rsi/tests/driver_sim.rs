@@ -347,11 +347,12 @@ fn a_12_ms_cycle_follows_a_12_ms_robot() {
     let (drv, sim) = with_cycles(12, 12);
     let mut q = drv.state().q_setpoint;
     q[5] += 0.05;
-    let t0 = Instant::now();
+    // Counted in the robot's cycles, not in wall time: a CI VM can stretch the simulator's cycle.
+    let c0 = drv.state().cycle;
     drv.move_to(q, Duration::from_millis(600)).unwrap();
-    drv.wait_idle(Duration::from_secs(3)).unwrap();
-    let took = t0.elapsed().as_secs_f64();
-    assert!((0.55..0.9).contains(&took), "a 0.6 s move took {took:.2} s");
+    drv.wait_idle(Duration::from_secs(30)).unwrap();
+    let cycles = drv.state().cycle - c0;
+    assert!((50..=60).contains(&cycles), "0.6 s is 50 cycles of 12 ms, the move took {cycles}");
     let st = settled(&drv, &sim);
     assert!((st.q_setpoint_deg[5].to_radians() - q[5]).abs() < 1e-6, "{st:?}");
     let s = drv.stats();

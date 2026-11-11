@@ -436,6 +436,14 @@ fn link(opts: &Options, drv: &Driver) -> Check {
     }
 }
 
+/// The robot sends one telegram per cycle: a rate more than 4 % off is reported.
+fn rate_problem(rate: f64, cycle: Duration) -> Option<String> {
+    let cycle_ms = cycle.as_secs_f64() * 1000.0;
+    let expected = 1000.0 / cycle_ms;
+    (!(0.96 * expected..=1.04 * expected).contains(&rate))
+        .then(|| format!("expected {expected:.0} telegrams/s ({cycle_ms} ms cycle), got {rate:.0}"))
+}
+
 fn timing(opts: &Options, drv: &Driver, onlysend: bool) -> Option<Check> {
     let s0 = drv.stats();
     let t0 = Instant::now();
@@ -467,10 +475,7 @@ fn timing(opts: &Options, drv: &Driver, onlysend: bool) -> Option<Check> {
     let rate = cycles as f64 / elapsed;
     let mut detail = format!("{rate:.0} telegrams/s, longest gap {:.1} ms", s1.interarrival_max_us as f64 / 1000.0);
     let mut problems = Vec::new();
-    let expected = 1000.0 / cycle_ms;
-    if !(0.96 * expected..=1.04 * expected).contains(&rate) {
-        problems.push(format!("expected {expected:.0} telegrams/s ({cycle_ms} ms cycle), got {rate:.0}"));
-    }
+    problems.extend(rate_problem(rate, opts.cycle));
     if !onlysend {
         let replies = s1.replies - s0.replies;
         let late = s1.late_replies - s0.late_replies;
@@ -497,4 +502,19 @@ fn timing(opts: &Options, drv: &Driver, onlysend: bool) -> Option<Check> {
             problems.join("; ")
         ))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_expected_telegram_rate_follows_the_cycle() {
+        let (ms4, ms12) = (Duration::from_millis(4), Duration::from_millis(12));
+        assert_eq!(rate_problem(250.0, ms4), None);
+        assert_eq!(rate_problem(83.0, ms12), None);
+        assert_eq!(rate_problem(245.0, ms4), None, "within 4 %");
+        assert_eq!(rate_problem(83.0, ms4).unwrap(), "expected 250 telegrams/s (4 ms cycle), got 83");
+        assert_eq!(rate_problem(22.0, ms12).unwrap(), "expected 83 telegrams/s (12 ms cycle), got 22");
+    }
 }

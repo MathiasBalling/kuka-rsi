@@ -139,9 +139,10 @@ fn live_check_holds_the_simulated_robot_and_ends_its_program() {
 fn live_check_accepts_the_12_ms_cycle_when_told() {
     let ms12 = Duration::from_millis(12);
     let (checks, sim) = live(ms12, ms12);
+    // Not a failure, so not taken for a cycle mismatch. The rate is not asserted: a CI VM can
+    // stretch the simulator's cycle (the expected rate has its own test in `doctor`).
     let timing = find(&checks, "timing");
     assert_ne!(timing.status, Status::Fail, "{timing:?}");
-    assert!(!timing.hint.as_deref().unwrap_or("").contains("expected"), "83 telegrams/s is right at 12 ms: {timing:?}");
     assert_eq!(sim.wait_exit(Duration::from_secs(3)), Some(SimExit::Stopped));
 }
 
