@@ -1,6 +1,7 @@
 //! The driver: one real-time thread answering telegrams, and the handle callers use.
 
 use std::collections::{HashMap, VecDeque};
+use std::fmt::Write as _;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -41,6 +42,9 @@ struct Shared {
     /// The session is faulted (`Session::is_faulted`): motion and messages are refused until
     /// the next session.
     faulted: AtomicBool,
+    /// The robot's cycle in ms where it differs from the configured one (0: no mismatch seen).
+    /// Set before the fault it causes is published, cleared when the next session starts.
+    robot_cycle_ms: AtomicU64,
     /// Points of `Stream` commands pushed by `Driver::stream` and not yet counted in `queue_len`.
     /// Raised before the push, lowered by the real-time thread after the `publish` that follows
     /// the command's application or rejection, so `stream`'s room check never misses a point.
@@ -108,6 +112,10 @@ pub(crate) fn raise_priority() -> bool {
     }
 }
 
+/// Telegrams in a row with the same unexpected IPOC step that mean the robot runs another cycle
+/// than configured. A lost telegram gives one odd step, not a run of equal ones.
+const CYCLE_MISMATCH_AFTER: u32 = 5;
+
 /// State owned by the real-time thread.
 struct Rt {
     link: UdpLink,
@@ -135,6 +143,9 @@ struct Rt {
     log_tx: rtrb::Producer<RobotState>,
     last_rx: Option<Instant>,
     last_ipoc: Option<u64>,
+    /// The last IPOC step other than `ipoc_step`, and how many telegrams in a row had it.
+    odd_step: u64,
+    odd_steps: u32,
     latency_sum_us: u64,
     /// Commands popped from the queue and not yet released from `Shared::pending`.
     unsettled: u32,
@@ -253,6 +264,17 @@ impl Rt {
         }
     }
 
+    /// The robot's telegrams are `robot_ms` apart, not the configured cycle. Every duration and
+    /// speed limit is counted in cycles, so motion would run at the wrong speed (three times too
+    /// fast with 12 ms configured against a 4 ms robot): freeze the command and tell the robot.
+    fn cycle_mismatch(&mut self, robot_ms: u64) {
+        let mut msg = ArrayString::<56>::new();
+        let _ = write!(msg, "cycle mismatch: robot {robot_ms} ms, PC {} ms", self.ipoc_step);
+        let _ = self.session.apply(Command::Fault(msg));
+        self.shared.robot_cycle_ms.store(robot_ms, Ordering::Release);
+        self.event(Event::CycleMismatch { robot_ms, configured_ms: self.ipoc_step });
+    }
+
     fn cycle(&mut self) -> Result<()> {
         let Some(rx) = self.link.recv_newest(&mut self.rx)? else {
             self.no_telegram();
@@ -309,11 +331,25 @@ impl Rt {
             self.session.start(&self.tele);
             self.stats.sessions += 1;
             self.last_ipoc = None;
+            self.odd_steps = 0;
+            self.shared.robot_cycle_ms.store(0, Ordering::Release);
             self.set_session(SessionState::Active);
         }
         if let Some(prev) = self.last_ipoc {
-            if self.tele.ipoc.wrapping_sub(prev) != self.ipoc_step {
+            let step = self.tele.ipoc.wrapping_sub(prev);
+            if step == self.ipoc_step {
+                self.odd_steps = 0;
+            } else {
                 self.stats.ipoc_gaps += 1;
+                // Telegrams this PC skipped because a newer one was waiting explain a longer
+                // step; they say nothing about the robot's cycle.
+                if step != self.ipoc_step.saturating_mul(rx.skipped as u64 + 1) {
+                    self.odd_steps = if step == self.odd_step { self.odd_steps.saturating_add(1) } else { 1 };
+                    self.odd_step = step;
+                    if self.odd_steps == CYCLE_MISMATCH_AFTER {
+                        self.cycle_mismatch(step);
+                    }
+                }
             }
         }
         self.last_ipoc = Some(self.tele.ipoc);
@@ -428,6 +464,8 @@ impl RateLimiter {
 
 fn level_of(e: &Event) -> log::Level {
     match e {
+        // An error, so the tools show it without a log level set: the run cannot continue.
+        Event::CycleMismatch { .. } => log::Level::Error,
         Event::LinkLost
         | Event::LateReply { .. }
         | Event::ParseError
@@ -540,6 +578,7 @@ impl Driver {
             pending: AtomicU32::new(0),
             settled: AtomicBool::new(true),
             faulted: AtomicBool::new(false),
+            robot_cycle_ms: AtomicU64::new(0),
             in_flight: AtomicUsize::new(0),
             monitor_stop: AtomicBool::new(false),
             robot_addr: AtomicU64::new(0),
@@ -571,6 +610,8 @@ impl Driver {
             log_tx,
             last_rx: None,
             last_ipoc: None,
+            odd_step: 0,
+            odd_steps: 0,
             latency_sum_us: 0,
             unsettled: 0,
             unsettled_points: 0,
@@ -649,6 +690,18 @@ impl Driver {
         self.shared.faulted.load(Ordering::Acquire)
     }
 
+    /// The robot's cycle, if its telegrams come at another cycle than `DriverConfig::cycle`
+    /// (the robot program runs another sensor mode: 4 ms `#IPO_FAST`, 12 ms `#IPO`). The driver
+    /// faults such a session within a few telegrams, because every duration and speed limit is
+    /// counted in cycles; motion calls then return `Error::CycleMismatch`. Kept after the session
+    /// ends, cleared when the next one starts.
+    pub fn cycle_mismatch(&self) -> Option<Duration> {
+        match self.shared.robot_cycle_ms.load(Ordering::Acquire) {
+            0 => None,
+            ms => Some(Duration::from_millis(ms)),
+        }
+    }
+
     /// Latest published state (wait-free on the real-time side).
     pub fn state(&self) -> RobotState {
         *self.state_out.lock().unwrap().read()
@@ -713,7 +766,7 @@ impl Driver {
                 && self.shared.settled.load(Ordering::Acquire);
             // After `pending`: a fault applied before `pending` read zero is seen here.
             if self.is_faulted() {
-                return Err(Error::Faulted);
+                return Err(self.faulted_error());
             }
             if idle {
                 return Ok(());
@@ -741,9 +794,20 @@ impl Driver {
     fn require_active(&self) -> Result<()> {
         self.require_session()?;
         if self.is_faulted() {
-            return Err(Error::Faulted);
+            return Err(self.faulted_error());
         }
         Ok(())
+    }
+
+    /// Why the session is faulted: a cycle mismatch found by the driver, or a `fault` call.
+    fn faulted_error(&self) -> Error {
+        match self.cycle_mismatch() {
+            Some(robot) => Error::CycleMismatch {
+                robot_ms: robot.as_millis() as u64,
+                configured_ms: self.cfg.cycle.as_millis() as u64,
+            },
+            None => Error::Faulted,
+        }
     }
 
     fn send(&self, cmd: Command) -> Result<()> {

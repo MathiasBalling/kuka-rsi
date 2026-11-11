@@ -373,12 +373,26 @@ impl Limits {
     }
 }
 
+/// Parse a cycle in whole milliseconds, as the command-line tools take it (`--cycle-ms`): the
+/// robot's sensor mode, 4 for `#IPO_FAST` (the default of `RSI_ON`) or 12 for `#IPO`. Other
+/// values are for the simulator, which runs any cycle.
+pub fn parse_cycle_ms(s: &str) -> std::result::Result<u64, String> {
+    match s.parse::<u64>() {
+        Ok(ms @ 1..=1000) => Ok(ms),
+        _ => Err(format!("the cycle must be whole milliseconds, 4 (#IPO_FAST) or 12 (#IPO), got {s:?}")),
+    }
+}
+
 /// Everything the driver needs to start.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DriverConfig {
     pub ethernet: EthernetConfig,
     /// Override of the bind address; default is `IP_NUMBER:PORT` from the Ethernet config.
     pub bind: Option<SocketAddr>,
+    /// The robot's RSI cycle, set by the sensor mode of `RSI_ON`: 4 ms (`#IPO_FAST`, the default)
+    /// or 12 ms (`#IPO`). Durations and speed limits are counted in cycles, so the driver faults
+    /// a session whose telegrams come at another cycle
+    /// ([`Event::CycleMismatch`](crate::stats::Event::CycleMismatch)).
     pub cycle: Duration,
     /// Silence after which an active session is declared lost.
     pub link_timeout: Duration,
@@ -436,8 +450,13 @@ impl DriverConfig {
         self
     }
 
+    /// Set the robot's cycle. Also raises `link_timeout` to 125 cycles if it is shorter: the
+    /// robot keeps a session for its ETHERNET `Timeout` (100 cycles in the shipped context, 1.2 s
+    /// at 12 ms), and the driver must not declare it lost before the robot does. Call
+    /// [`link_timeout`](Self::link_timeout) after this to set another value.
     pub fn cycle(mut self, d: Duration) -> Self {
         self.cycle = d;
+        self.link_timeout = self.link_timeout.max(d * 125);
         self
     }
 
@@ -660,6 +679,18 @@ mod tests {
         assert_eq!(EthernetConfig::from_path_or_shipped(none).unwrap(), EthernetConfig::shipped().unwrap());
         let err = EthernetConfig::from_path_or_shipped(Some(Path::new("/nonexistent.xml"))).unwrap_err();
         assert!(err.to_string().contains("/nonexistent.xml"));
+    }
+
+    #[test]
+    fn a_longer_cycle_stretches_the_link_timeout() {
+        let c = DriverConfig::shipped().unwrap();
+        assert_eq!(c.clone().cycle(Duration::from_millis(4)).link_timeout, Duration::from_millis(500));
+        // 100 cycles of 12 ms are 1.2 s on the robot: the driver waits longer than that.
+        assert_eq!(c.clone().cycle(Duration::from_millis(12)).link_timeout, Duration::from_millis(1500));
+        let long = c.clone().link_timeout(Duration::from_secs(3)).cycle(Duration::from_millis(12));
+        assert_eq!(long.link_timeout, Duration::from_secs(3));
+        let explicit = c.cycle(Duration::from_millis(12)).link_timeout(Duration::from_millis(250));
+        assert_eq!(explicit.link_timeout, Duration::from_millis(250));
     }
 
     #[test]

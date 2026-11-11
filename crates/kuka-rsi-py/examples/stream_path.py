@@ -1,14 +1,15 @@
 """Stream a multi-axis sine the way a policy would, from Python.
 
     python examples/stream_path.py [kuka_rsi_ethernet.xml] [--axes 6] [--amp 3] [--period 4]
-        [--secs 8] [--stop-after S] [--speed 20] [--log run.csv] [--bind ADDR]
+        [--secs 8] [--stop-after S] [--speed 20] [--log run.csv] [--bind ADDR] [--cycle-ms 4]
 
 The same path and checks as the Rust example `stream_trajectory`: every 100 ms the next 0.5 s
 of the path as five points with replace=True. Each axis in --axes swings +/- --amp degrees around
 the start pose, phases spread across the axes, fading in over the first period and out over the
 last. --stop-after stops sending mid-path; the report shows where the robot holds against the
 last target sent. Then it returns to the start pose. Amplitudes are capped at 30 degrees (A6 45)
-and the path's peak speed must stay within --speed (at most 30 deg/s).
+and the path's peak speed must stay within --speed (at most 30 deg/s). --cycle-ms 12 is for a
+robot program that runs the 12 ms sensor mode, RSI_ON(#ABSOLUTE, #IPO, #BASE); the default 4 ms is #IPO_FAST.
 """
 
 from __future__ import annotations
@@ -55,6 +56,7 @@ def parse(argv: list[str] | None) -> argparse.Namespace:
     ap.add_argument("--speed", type=float, default=20.0)
     ap.add_argument("--log")
     ap.add_argument("--bind")
+    ap.add_argument("--cycle-ms", type=float, default=4.0, help="the robot's RSI cycle: 4 (#IPO_FAST) or 12 (#IPO)")
     a = ap.parse_args(argv)
     try:
         a.axes = sorted({int(x.strip().lstrip("Aa")) - 1 for x in a.axes.split(",")})
@@ -74,6 +76,8 @@ def parse(argv: list[str] | None) -> argparse.Namespace:
         ap.error(f"the path peaks at {peak:.1f} deg/s, above --speed {a.speed}: lower --amp or raise --period")
     if a.stop_after is not None and not 0 < a.stop_after < a.secs:
         ap.error("--stop-after must be within --secs")
+    if not (math.isfinite(a.cycle_ms) and a.cycle_ms > 0):
+        ap.error("--cycle-ms must be positive: 4 (#IPO_FAST) or 12 (#IPO)")
     return a
 
 
@@ -83,7 +87,9 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     limits = kuka_rsi.Limits.kr10_defaults(max_velocity=math.radians(a.speed))
     kw = {"bind": a.bind} if a.bind else {}
-    drv = kuka_rsi.Driver(a.config, limits=limits, stop_channel="MoveStop", **kw)
+    if a.cycle_ms != 4:
+        print(f"cycle: {a.cycle_ms:g} ms (the robot program must run the same sensor mode)", flush=True)
+    drv = kuka_rsi.Driver(a.config, limits=limits, stop_channel="MoveStop", cycle_ms=a.cycle_ms, **kw)
     if a.log:
         pathlib.Path(a.log).parent.mkdir(parents=True, exist_ok=True)
     log = open(a.log, "w") if a.log else None  # noqa: SIM115 - closed in finally

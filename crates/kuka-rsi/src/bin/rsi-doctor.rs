@@ -34,6 +34,9 @@ struct Args {
     hold: f64,
     #[arg(long, default_value = "MoveStop")]
     stop_channel: String,
+    /// The robot's RSI cycle in ms: 4 (#IPO_FAST) or 12 (#IPO, RSI_ON(#ABSOLUTE, #IPO, #BASE))
+    #[arg(long, default_value_t = 4, value_parser = kuka_rsi::config::parse_cycle_ms)]
+    cycle_ms: u64,
 }
 
 fn main() -> std::process::ExitCode {
@@ -50,6 +53,7 @@ fn main() -> std::process::ExitCode {
     opts.wait = Duration::from_secs_f64(a.wait.max(0.0));
     opts.hold = Duration::from_secs_f64(a.hold.max(0.5));
     opts.stop_channel = a.stop_channel;
+    opts.cycle = Duration::from_millis(a.cycle_ms);
     opts.cancel = Some(cancel.clone());
 
     let checks = doctor::run(&opts, |p| match p {

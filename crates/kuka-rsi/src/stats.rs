@@ -12,7 +12,8 @@ pub struct Stats {
     pub reply_latency_max_us: u64,
     pub reply_latency_mean_us: f64,
     pub interarrival_max_us: u64,
-    /// IPOC steps that differed from the step seen between the first two telegrams.
+    /// IPOC steps other than the configured cycle: missing telegrams, or a robot that runs
+    /// another cycle (see [`Event::CycleMismatch`]).
     pub ipoc_gaps: u64,
     /// Older datagrams discarded because a newer one was already queued.
     pub skipped_datagrams: u64,
@@ -46,20 +47,34 @@ pub enum ClampKind {
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Event {
     Listening,
-    RobotConnected { ipoc: u64 },
+    RobotConnected {
+        ipoc: u64,
+    },
     LinkLost,
-    LateReply { latency_us: u64 },
+    LateReply {
+        latency_us: u64,
+    },
     ParseError,
     IoError,
     SentypeMismatch,
     Clamped(ClampKind),
     Starved,
-    TrackingError { error_rad: f64 },
+    TrackingError {
+        error_rad: f64,
+    },
     CommandRejected,
     Fault,
+    /// The robot's telegrams are `robot_ms` apart, not the configured cycle. The session is
+    /// faulted: set `DriverConfig::cycle` to the robot's sensor mode (4 ms `#IPO_FAST`, 12 ms `#IPO`).
+    CycleMismatch {
+        robot_ms: u64,
+        configured_ms: u64,
+    },
     Notified,
     StopPulsed,
-    RtPriority { ok: bool },
+    RtPriority {
+        ok: bool,
+    },
     Panic,
     LogDropped,
 }

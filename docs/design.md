@@ -28,8 +28,11 @@ Goals, in priority order:
    the robot, in Rust and in pytest.
 
 Non-goals for the first version (section 13 lists what is prepared for but not built):
-Cartesian correction, external axes, digital I/O, the 12 ms `#IPO` mode, a physics
-simulator backend behind the same API, safety-rated behaviour of any kind.
+Cartesian correction, external axes, digital I/O, a physics simulator backend behind the
+same API, safety-rated behaviour of any kind. The 12 ms `#IPO` mode is not a target either:
+the driver takes the cycle as a setting (`DriverConfig::cycle`, `--cycle-ms`) and refuses a
+session whose telegrams come at another one, but the shipped program runs `#IPO_FAST` and
+12 ms is not confirmed on a robot.
 
 ## 2. Facts that drive the design
 

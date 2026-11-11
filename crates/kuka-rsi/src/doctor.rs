@@ -84,6 +84,8 @@ pub struct Options {
     pub wait: Duration,
     /// How long to hold the robot and measure the timing once it is connected.
     pub hold: Duration,
+    /// The robot's RSI cycle: 4 ms (`#IPO_FAST`, the default) or 12 ms (`#IPO`).
+    pub cycle: Duration,
     /// Channel that ends `RSI_MOVECORR()` when the live check is done.
     pub stop_channel: String,
     /// Set to end the live checks early (Ctrl-C); the program is still ended cleanly.
@@ -99,6 +101,7 @@ impl Default for Options {
             robot: None,
             wait: Duration::ZERO,
             hold: Duration::from_secs(3),
+            cycle: Duration::from_millis(4),
             stop_channel: "MoveStop".into(),
             cancel: None,
         }
@@ -377,6 +380,7 @@ fn live(opts: &Options, mut cfg: DriverConfig, report: &mut dyn FnMut(Progress))
         )];
     }
     let onlysend = cfg.ethernet.onlysend;
+    cfg = cfg.cycle(opts.cycle);
     if !onlysend && has_channel(&cfg, &opts.stop_channel) {
         cfg = cfg.stop_channel(&opts.stop_channel);
     }
@@ -435,13 +439,24 @@ fn link(opts: &Options, drv: &Driver) -> Check {
 fn timing(opts: &Options, drv: &Driver, onlysend: bool) -> Option<Check> {
     let s0 = drv.stats();
     let t0 = Instant::now();
-    let link_lost = || drv.session() != SessionState::Active;
+    let link_lost = || drv.session() != SessionState::Active || drv.is_faulted();
     if !wait_or_cancel(opts, opts.hold, link_lost) {
         return Some(Check::new("timing", Status::Skip, "cancelled"));
     }
     let elapsed = t0.elapsed().as_secs_f64();
     let s1 = drv.stats();
     let state = drv.state();
+    let cycle_ms = opts.cycle.as_secs_f64() * 1000.0;
+    if let Some(robot_ms) = drv.cycle_mismatch().map(|d| d.as_millis()) {
+        return Some(
+            Check::new("timing", Status::Fail, format!("the robot sends every {robot_ms} ms, not every {cycle_ms} ms"))
+                .hint(format!(
+                    "The robot program runs another sensor mode than this PC expects (RSI_ON: #IPO_FAST is 4 ms, \
+                     #IPO is 12 ms). Pass --cycle-ms {robot_ms} (cycle_ms in Python, DriverConfig::cycle in Rust), \
+                     or change the mode in the program. The driver refuses to move while they differ."
+                )),
+        );
+    }
     if drv.session() != SessionState::Active {
         return Some(
             Check::new("timing", Status::Fail, format!("the link was lost after {elapsed:.1} s of holding"))
@@ -452,8 +467,9 @@ fn timing(opts: &Options, drv: &Driver, onlysend: bool) -> Option<Check> {
     let rate = cycles as f64 / elapsed;
     let mut detail = format!("{rate:.0} telegrams/s, longest gap {:.1} ms", s1.interarrival_max_us as f64 / 1000.0);
     let mut problems = Vec::new();
-    if !(240.0..=260.0).contains(&rate) {
-        problems.push(format!("expected 250 telegrams/s (4 ms cycle), got {rate:.0}"));
+    let expected = 1000.0 / cycle_ms;
+    if !(0.96 * expected..=1.04 * expected).contains(&rate) {
+        problems.push(format!("expected {expected:.0} telegrams/s ({cycle_ms} ms cycle), got {rate:.0}"));
     }
     if !onlysend {
         let replies = s1.replies - s0.replies;

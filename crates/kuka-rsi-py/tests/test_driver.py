@@ -159,6 +159,39 @@ def test_fault_is_visible_and_refuses_motion():
     drv.close()
 
 
+def with_cycles(cycle_ms, robot_ms, **kw):
+    drv = kuka_rsi.Driver(bind="127.0.0.1:0", cycle_ms=cycle_ms, rt_priority=False, **kw)
+    sim = kuka_rsi.ControllerSim(str(CONFIG), target=drv.local_addr(), bind="127.0.0.1:0", cycle_ms=robot_ms)
+    drv.wait_for_robot(3.0)
+    return drv, sim
+
+
+def test_a_12_ms_cycle_follows_a_12_ms_robot():
+    drv, sim = with_cycles(12, 12, stop_channel="MoveStop")
+    q = drv.state().q_setpoint
+    q[5] += 0.05
+    drv.move_to(q, duration=0.6)
+    drv.wait_idle(3.0)
+    assert not drv.is_faulted()
+    assert np.isclose(drv.state().q_command[5], q[5])
+    drv.close()
+    assert sim.wait_exit(2.0) == "Stopped"
+
+
+@pytest.mark.parametrize(("cycle_ms", "robot_ms"), [(12, 4), (4, 12)])
+def test_a_cycle_other_than_the_robots_refuses_motion(cycle_ms, robot_ms):
+    # A link timeout long enough to inspect the faulted session after the simulator stops on the
+    # fault message.
+    drv, _sim = with_cycles(cycle_ms, robot_ms, link_timeout=3.0)
+    t0 = time.monotonic()
+    while not drv.is_faulted() and time.monotonic() - t0 < 1.0:
+        time.sleep(0.005)
+    assert drv.is_faulted()
+    with pytest.raises(kuka_rsi.Faulted, match=f"cycle mismatch: the robot sends every {robot_ms} ms"):
+        drv.move_to(drv.state().q_command, duration=0.2)
+    drv.close()
+
+
 def test_driver_dealloc_does_not_deadlock():
     # Dropping a Driver without close() runs its close under the GIL; the monitor thread logs
     # through pyo3-log and needs the GIL too. Run in a subprocess so a deadlock cannot hang pytest.

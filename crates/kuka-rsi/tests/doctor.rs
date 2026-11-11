@@ -95,14 +95,15 @@ fn an_address_not_on_this_pc_fails_and_skips_the_port() {
     assert_eq!(find(&checks, "port").status, Status::Skip);
 }
 
-#[test]
-fn live_check_holds_the_simulated_robot_and_ends_its_program() {
+/// The live checks with `cycle` on the PC against a simulated robot that sends every `robot`.
+fn live(cycle: Duration, robot: Duration) -> (Vec<Check>, kuka_rsi::sim::SimHandle) {
     let bind = free_loopback_port();
     let mut opts = Options::new(CONFIG);
     opts.bind = Some(bind);
     opts.robot = Some("127.0.0.1".parse().unwrap());
     opts.wait = Duration::from_secs(5);
     opts.hold = Duration::from_secs(1);
+    opts.cycle = cycle;
     let (listening, rx) = std::sync::mpsc::channel();
     let doctor = std::thread::spawn(move || {
         doctor::run(&opts, |p| {
@@ -116,9 +117,15 @@ fn live_check_holds_the_simulated_robot_and_ends_its_program() {
 
     let mut sim_cfg = SimConfig::new(EthernetConfig::from_path(CONFIG).unwrap(), bind);
     sim_cfg.bind = "127.0.0.1:0".parse().unwrap();
+    sim_cfg.cycle = robot;
     let sim = ControllerSim::spawn(sim_cfg).unwrap();
-    let checks = doctor.join().unwrap();
+    (doctor.join().unwrap(), sim)
+}
 
+#[test]
+fn live_check_holds_the_simulated_robot_and_ends_its_program() {
+    let ms4 = Duration::from_millis(4);
+    let (checks, sim) = live(ms4, ms4);
     let link = find(&checks, "robot link");
     assert_eq!(link.status, Status::Pass, "{link:?}");
     assert!(link.detail.contains(&sim.local_addr().to_string()), "{link:?}");
@@ -126,6 +133,25 @@ fn live_check_holds_the_simulated_robot_and_ends_its_program() {
     assert_ne!(timing.status, Status::Fail, "{timing:?}");
     assert!(timing.detail.contains("telegrams/s"), "{timing:?}");
     assert_eq!(sim.wait_exit(Duration::from_secs(3)), Some(SimExit::Stopped), "the doctor ends the program");
+}
+
+#[test]
+fn live_check_accepts_the_12_ms_cycle_when_told() {
+    let ms12 = Duration::from_millis(12);
+    let (checks, sim) = live(ms12, ms12);
+    let timing = find(&checks, "timing");
+    assert_ne!(timing.status, Status::Fail, "{timing:?}");
+    assert!(!timing.hint.as_deref().unwrap_or("").contains("expected"), "83 telegrams/s is right at 12 ms: {timing:?}");
+    assert_eq!(sim.wait_exit(Duration::from_secs(3)), Some(SimExit::Stopped));
+}
+
+#[test]
+fn live_check_names_a_cycle_other_than_the_robots() {
+    let (checks, _sim) = live(Duration::from_millis(4), Duration::from_millis(12));
+    let timing = find(&checks, "timing");
+    assert_eq!(timing.status, Status::Fail, "{timing:?}");
+    assert!(timing.detail.contains("every 12 ms"), "{timing:?}");
+    assert!(timing.hint.as_deref().unwrap_or("").contains("--cycle-ms 12"), "{timing:?}");
 }
 
 #[test]

@@ -43,6 +43,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--wait", type=float, default=0.0, help="seconds to wait for the robot; 0 skips the live checks")
     ap.add_argument("--hold", type=float, default=3.0, help="seconds to hold the robot while measuring the timing")
     ap.add_argument("--stop-channel", default="MoveStop")
+    ap.add_argument(
+        "--cycle-ms", type=float, default=4.0, help="the robot's RSI cycle: 4 (#IPO_FAST) or 12 (#IPO, RSI_ON(#ABSOLUTE, #IPO, #BASE))"
+    )
     a = ap.parse_args(argv)
     try:
         checks = check_setup(
@@ -52,6 +55,7 @@ def main(argv: list[str] | None = None) -> int:
             wait=a.wait,
             hold=a.hold,
             stop_channel=a.stop_channel,
+            cycle_ms=a.cycle_ms,
             report=_print_event,
         )
     except KeyboardInterrupt:

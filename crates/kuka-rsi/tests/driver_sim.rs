@@ -324,6 +324,61 @@ fn ipoc_gaps_count_missing_telegrams_only() {
     let s = drv.stats();
     assert!(s.ipoc_gaps >= 1, "the dropped second telegram is a gap: {s:?}");
     assert!(s.ipoc_gaps * 5 < s.cycles, "only missing telegrams are gaps: {s:?}");
+    assert!(!drv.is_faulted(), "missing telegrams are not a cycle mismatch");
+}
+
+/// A driver with a `cycle_ms` cycle against a simulated robot that sends every `robot_ms`.
+fn with_cycles(cycle_ms: u64, robot_ms: u64) -> (Driver, SimHandle) {
+    let cfg = DriverConfig::new(EthernetConfig::from_str(SHIPPED).unwrap())
+        .bind("127.0.0.1:0".parse().unwrap())
+        .stop_channel("MoveStop")
+        .cycle(Duration::from_millis(cycle_ms))
+        .rt_priority(false);
+    let drv = Driver::spawn(cfg).unwrap();
+    let mut c = sim_config(&drv);
+    c.cycle = Duration::from_millis(robot_ms);
+    let sim = ControllerSim::spawn(c).unwrap();
+    drv.wait_for_robot(Duration::from_secs(3)).unwrap();
+    (drv, sim)
+}
+
+#[test]
+fn a_12_ms_cycle_follows_a_12_ms_robot() {
+    let (drv, sim) = with_cycles(12, 12);
+    let mut q = drv.state().q_setpoint;
+    q[5] += 0.05;
+    let t0 = Instant::now();
+    drv.move_to(q, Duration::from_millis(600)).unwrap();
+    drv.wait_idle(Duration::from_secs(3)).unwrap();
+    let took = t0.elapsed().as_secs_f64();
+    assert!((0.55..0.9).contains(&took), "a 0.6 s move took {took:.2} s");
+    let st = settled(&drv, &sim);
+    assert!((st.q_setpoint_deg[5].to_radians() - q[5]).abs() < 1e-6, "{st:?}");
+    let s = drv.stats();
+    assert!(!drv.is_faulted());
+    assert!(s.ipoc_gaps <= s.skipped_datagrams, "IPOC steps of 12 ms are not gaps: {s:?}");
+}
+
+#[test]
+fn a_cycle_other_than_the_robots_faults_the_session() {
+    // The dangerous direction first: the PC plans for 12 ms steps, the robot applies one every
+    // 4 ms, so every move would run three times too fast.
+    for (cycle_ms, robot_ms) in [(12, 4), (4, 12)] {
+        let (drv, sim) = with_cycles(cycle_ms, robot_ms);
+        assert!(wait_until(Duration::from_secs(1), || drv.is_faulted()), "{cycle_ms} ms against {robot_ms} ms");
+        let q = drv.state().q_setpoint;
+        match drv.move_to(q, Duration::from_secs(1)) {
+            Err(Error::CycleMismatch { robot_ms: r, configured_ms: c }) => assert_eq!((r, c), (robot_ms, cycle_ms)),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(drv.cycle_mismatch(), Some(Duration::from_millis(robot_ms)));
+        // The robot is told why: the fault message stops it.
+        assert_eq!(sim.wait_exit(Duration::from_secs(2)), Some(SimExit::EStrError), "{cycle_ms}/{robot_ms}");
+        std::thread::sleep(Duration::from_millis(120)); // events reach the history via the monitor thread
+        let ev = drv.events();
+        let want = Event::CycleMismatch { robot_ms, configured_ms: cycle_ms };
+        assert!(ev.contains(&want), "{ev:?}");
+    }
 }
 
 #[test]

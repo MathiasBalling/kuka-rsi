@@ -2,6 +2,7 @@
 //! five points, replacing what was queued. Usage:
 //!   cargo run --example stream_trajectory -- [controller/kuka_rsi_ethernet.xml] [--axes 6] [--amp 3]
 //!       [--period 4] [--secs 8] [--stop-after S] [--speed 20] [--log run.csv] [--bind ADDR]
+//!       [--cycle-ms 4]
 //!
 //! Each axis in `--axes` (comma-separated, e.g. `1,3,6`) swings ±`--amp` degrees around the
 //! start pose with period `--period`, phases spread across the axes. The swing fades in over the
@@ -9,7 +10,8 @@
 //! sending mid-path, the way a crashed policy would: the robot plays out the last chunk, holds,
 //! and the report shows how far it moved after the stop. Then it returns to the start pose.
 //! Amplitudes are capped like `jog` (30°, A6 45°), and the path's peak speed must stay within
-//! `--speed` (at most 30°/s).
+//! `--speed` (at most 30°/s). `--cycle-ms 12` is for a robot program that runs the 12 ms sensor
+//! mode, `RSI_ON(#ABSOLUTE, #IPO, #BASE)`; the default 4 ms is `#IPO_FAST`.
 
 use std::f64::consts::TAU;
 use std::time::{Duration, Instant};
@@ -22,7 +24,7 @@ use kuka_rsi::state::RobotState;
 use kuka_rsi::stats::Stats;
 
 const USAGE: &str = "usage: stream_trajectory [ethernet.xml] [--axes 6] [--amp 3] [--period 4] [--secs 8] \
-                     [--stop-after S] [--speed 20] [--log FILE] [--bind ADDR]";
+                     [--stop-after S] [--speed 20] [--log FILE] [--bind ADDR] [--cycle-ms 4]";
 const CAP_DEG: [f64; 6] = [30.0, 30.0, 30.0, 30.0, 30.0, 45.0];
 const MAX_SPEED_DEG_S: f64 = 30.0;
 /// Chunk period and horizon of the emulated policy.
@@ -39,6 +41,7 @@ struct Plan {
     speed_deg_s: f64,
     log: Option<String>,
     bind: Option<String>,
+    cycle_ms: u64,
 }
 
 impl Plan {
@@ -73,6 +76,7 @@ fn parse_args(args: &[String]) -> Result<(Option<String>, Plan), String> {
         speed_deg_s: 20.0,
         log: None,
         bind: None,
+        cycle_ms: 4,
     };
     while let Some(flag) = it.next() {
         let value = it.next().ok_or(USAGE)?;
@@ -96,6 +100,7 @@ fn parse_args(args: &[String]) -> Result<(Option<String>, Plan), String> {
             "--speed" => p.speed_deg_s = num(value)?,
             "--log" => p.log = Some(value.clone()),
             "--bind" => p.bind = Some(value.clone()),
+            "--cycle-ms" => p.cycle_ms = kuka_rsi::config::parse_cycle_ms(value)?,
             _ => return Err(USAGE.into()),
         }
     }
@@ -168,9 +173,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let (config, plan) = parse_args(&args)?;
     let eth = EthernetConfig::from_path_or_shipped(config.as_deref().map(std::path::Path::new))?;
     println!("config: {}", config.as_deref().unwrap_or("built-in kuka_rsi_ethernet.xml"));
+    if plan.cycle_ms != 4 {
+        println!("cycle: {} ms (the robot program must run the same sensor mode)", plan.cycle_ms);
+    }
     let mut cfg = DriverConfig::new(eth)
         .limits(Limits::kr10_defaults().with_max_velocity_all(plan.speed_deg_s.to_radians()))
-        .stop_channel("MoveStop");
+        .stop_channel("MoveStop")
+        .cycle(Duration::from_millis(plan.cycle_ms));
     if let Some(b) = &plan.bind {
         cfg = cfg.bind(b.parse()?);
     }

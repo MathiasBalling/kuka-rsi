@@ -156,6 +156,13 @@ holding the command short). `Limits.kr10_defaults()` keeps an acceleration limit
   `Timeout` × cycle (100 × 4 ms = 0.4 s in the shipped context; the default 0.5 s does).
   Shorter, the driver may declare a session lost that the robot still keeps, and the next
   telegram would start a new session with `q_start` captured mid-motion.
+- The cycle is 4 ms, the default sensor mode of `RSI_ON` (`#IPO_FAST`). For a robot program
+  that runs the 12 ms mode (`RSI_ON(#ABSOLUTE, #IPO, #BASE)`) set `cycle_ms=12` (Rust:
+  `DriverConfig::cycle`, tools: `--cycle-ms 12`); `link_timeout` then rises to 1.5 s. The 12 ms
+  mode is not yet confirmed on a robot. If the robot's telegrams come at another cycle than
+  the driver is set to, the driver faults the session within a few telegrams and motion calls
+  raise `Faulted` with "cycle mismatch" (Rust: `Error::CycleMismatch`): durations and speed
+  limits are counted in cycles, so motion would otherwise run at the wrong speed.
 - The tracking-error warning (`Limits.max_tracking_error`, default 2°) compares the
   actual position with the command just sent, so it must exceed `max_velocity` × the
   robot's lag (measure the lag at bring-up); below that it fires on every move.

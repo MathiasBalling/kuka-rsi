@@ -2,12 +2,14 @@
 //! Usage:
 //!   cargo run --example jog -- [controller/kuka_rsi_ethernet.xml] [--axis 6] [--deg 2]
 //!       [--move A1=30,A3=-15] [--speed 10] [--secs S] [--repeat 1] [--log run.csv] [--bind ADDR]
+//!       [--cycle-ms 4]
 //!
 //! `--axis`/`--deg` move one axis (default A6 by 2°); `--move` moves several at once. Offsets
 //! are capped at 30° (A1 to A5) and 45° (A6), the joint speed at 30°/s. Each leg (out and back)
 //! prints the measured angle against the target, the largest lag between command and actual
 //! position per moving axis, late replies, clamps and the robot's `Delay`. `--log` writes every
-//! cycle to a CSV file (see `kuka_rsi::record`).
+//! cycle to a CSV file (see `kuka_rsi::record`). `--cycle-ms 12` is for a robot program that runs
+//! the 12 ms sensor mode, `RSI_ON(#ABSOLUTE, #IPO, #BASE)`; the default 4 ms is `#IPO_FAST`.
 
 use std::time::{Duration, Instant};
 
@@ -19,7 +21,7 @@ use kuka_rsi::state::RobotState;
 use kuka_rsi::stats::Stats;
 
 const USAGE: &str = "usage: jog [ethernet.xml] [--axis N] [--deg D] [--move A1=30,A3=-15] [--speed 10] [--secs S] \
-                     [--repeat 1] [--log FILE] [--bind ADDR]";
+                     [--repeat 1] [--log FILE] [--bind ADDR] [--cycle-ms 4]";
 
 /// Largest offset per axis, degrees: what the cell allows around the usual pose.
 const CAP_DEG: [f64; 6] = [30.0, 30.0, 30.0, 30.0, 30.0, 45.0];
@@ -33,6 +35,7 @@ struct Plan {
     repeat: u32,
     log: Option<String>,
     bind: Option<String>,
+    cycle_ms: u64,
 }
 
 /// Parse `A1=30,A3=-15` into per-axis offsets in degrees.
@@ -65,6 +68,7 @@ fn parse_args(args: &[String]) -> Result<(Option<String>, Plan), String> {
     let config = it.next_if(|a| !a.starts_with("--")).cloned();
     let (mut axis, mut deg, mut moves) = (None, None, None);
     let (mut speed, mut secs, mut repeat, mut log, mut bind) = (10.0, None, 1u32, None, None);
+    let mut cycle_ms = 4;
     while let Some(flag) = it.next() {
         let value = it.next().ok_or(USAGE)?;
         let num = |v: &str| v.parse::<f64>().map_err(|_| format!("{flag}: not a number: {v}"));
@@ -77,6 +81,7 @@ fn parse_args(args: &[String]) -> Result<(Option<String>, Plan), String> {
             "--repeat" => repeat = value.parse().map_err(|_| format!("--repeat: not a count: {value}"))?,
             "--log" => log = Some(value.clone()),
             "--bind" => bind = Some(value.clone()),
+            "--cycle-ms" => cycle_ms = kuka_rsi::config::parse_cycle_ms(value)?,
             _ => return Err(USAGE.into()),
         }
     }
@@ -107,7 +112,7 @@ fn parse_args(args: &[String]) -> Result<(Option<String>, Plan), String> {
     if repeat == 0 {
         return Err("--repeat must be at least 1".into());
     }
-    Ok((config, Plan { offsets_deg, speed_deg_s: speed, secs, repeat, log, bind }))
+    Ok((config, Plan { offsets_deg, speed_deg_s: speed, secs, repeat, log, bind, cycle_ms }))
 }
 
 /// Set by the Ctrl-C handler; the handler then closes the driver and exits with 130.
@@ -195,9 +200,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let eth = EthernetConfig::from_path_or_shipped(config.as_deref().map(std::path::Path::new))?;
     println!("config: {}", config.as_deref().unwrap_or("built-in kuka_rsi_ethernet.xml"));
+    if plan.cycle_ms != 4 {
+        println!("cycle: {} ms (the robot program must run the same sensor mode)", plan.cycle_ms);
+    }
     let mut cfg = DriverConfig::new(eth)
         .limits(Limits::kr10_defaults().with_max_velocity_all(plan.speed_deg_s.to_radians()))
-        .stop_channel("MoveStop");
+        .stop_channel("MoveStop")
+        .cycle(Duration::from_millis(plan.cycle_ms));
     if let Some(b) = &plan.bind {
         cfg = cfg.bind(b.parse()?);
     }
@@ -269,6 +278,14 @@ mod tests {
         assert_eq!(config, None);
         assert_eq!(p.offsets_deg[0], 30.0);
         assert_eq!(parse_args(&[]).unwrap().0, None);
+    }
+
+    #[test]
+    fn the_cycle_defaults_to_4_ms() {
+        assert_eq!(parse_args(&args("")).unwrap().1.cycle_ms, 4);
+        assert_eq!(parse_args(&args("--cycle-ms 12")).unwrap().1.cycle_ms, 12);
+        assert!(parse_args(&args("--cycle-ms 0")).is_err());
+        assert!(parse_args(&args("--cycle-ms 4.5")).is_err());
     }
 
     #[test]

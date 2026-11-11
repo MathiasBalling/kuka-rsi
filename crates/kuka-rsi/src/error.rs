@@ -22,6 +22,11 @@ pub enum Error {
     QueueFull,
     #[error("driver faulted: motion and messages are refused until the KRL program restarts (a new session)")]
     Faulted,
+    #[error(
+        "cycle mismatch: the robot sends every {robot_ms} ms, the driver is set to {configured_ms} ms. Set the \
+         cycle to the robot's sensor mode (4 ms for #IPO_FAST, 12 ms for #IPO); motion is refused until then"
+    )]
+    CycleMismatch { robot_ms: u64, configured_ms: u64 },
     #[error("driver is closed")]
     Closed,
 }

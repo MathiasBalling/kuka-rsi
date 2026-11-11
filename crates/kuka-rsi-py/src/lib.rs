@@ -23,7 +23,7 @@ create_exception!(
     kuka_rsi,
     Faulted,
     Error,
-    "A fault() froze the command: stream, move_to, notify and wait_idle are refused until the KRL program restarts (a new session)."
+    "A fault() or a cycle mismatch froze the command: stream, move_to, notify and wait_idle are refused until the KRL program restarts (a new session)."
 );
 
 pub(crate) fn to_py(e: kuka_rsi::Error) -> PyErr {
@@ -34,7 +34,7 @@ pub(crate) fn to_py(e: kuka_rsi::Error) -> PyErr {
         E::Protocol(_) => ProtocolError::new_err(e.to_string()),
         E::Limit(_) | E::QueueFull => LimitError::new_err(e.to_string()),
         E::Io(_) => PyOSError::new_err(e.to_string()),
-        E::Faulted => Faulted::new_err(e.to_string()),
+        E::Faulted | E::CycleMismatch { .. } => Faulted::new_err(e.to_string()),
         E::Config(_) | E::Closed => Error::new_err(e.to_string()),
     }
 }
@@ -694,7 +694,7 @@ fn check_dict<'py>(py: Python<'py>, c: &kuka_rsi::doctor::Check) -> PyResult<Bou
 /// a background thread, so Ctrl-C (KeyboardInterrupt) cancels the live wait and still ends the
 /// robot program cleanly.
 #[pyfunction]
-#[pyo3(signature = (config=None, *, robot=None, bind=None, wait=0.0, hold=3.0, stop_channel="MoveStop", report=None))]
+#[pyo3(signature = (config=None, *, robot=None, bind=None, wait=0.0, hold=3.0, stop_channel="MoveStop", cycle_ms=4.0, report=None))]
 #[allow(clippy::too_many_arguments)]
 fn check_setup<'py>(
     py: Python<'py>,
@@ -704,6 +704,7 @@ fn check_setup<'py>(
     wait: f64,
     hold: f64,
     stop_channel: &str,
+    cycle_ms: f64,
     report: Option<Bound<'py, PyAny>>,
 ) -> PyResult<Vec<Bound<'py, PyDict>>> {
     let mut opts = kuka_rsi::doctor::Options { config, ..Default::default() };
@@ -712,6 +713,7 @@ fn check_setup<'py>(
     opts.wait = Duration::from_secs_f64(wait.max(0.0));
     opts.hold = secs(hold, "hold")?;
     opts.stop_channel = stop_channel.to_owned();
+    opts.cycle = secs(cycle_ms / 1000.0, "cycle_ms")?;
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     opts.cancel = Some(cancel.clone());
 

@@ -31,6 +31,9 @@ struct Args {
     /// Write every cycle to this CSV file (see kuka_rsi::record)
     #[arg(long)]
     log: Option<std::path::PathBuf>,
+    /// The robot's RSI cycle in ms: 4 (#IPO_FAST) or 12 (#IPO, RSI_ON(#ABSOLUTE, #IPO, #BASE))
+    #[arg(long, default_value_t = 4, value_parser = kuka_rsi::config::parse_cycle_ms)]
+    cycle_ms: u64,
 }
 
 /// Set by the Ctrl-C handler; the handler then closes the driver and exits with 130.
@@ -51,7 +54,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let a = Args::parse();
-    let mut cfg = DriverConfig::new(EthernetConfig::from_path_or_shipped(a.config.as_deref())?);
+    let mut cfg = DriverConfig::new(EthernetConfig::from_path_or_shipped(a.config.as_deref())?)
+        .cycle(Duration::from_millis(a.cycle_ms));
     if let Some(b) = a.bind {
         cfg = cfg.bind(b);
     }

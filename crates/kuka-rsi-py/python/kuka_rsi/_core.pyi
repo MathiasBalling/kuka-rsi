@@ -19,6 +19,10 @@ class Faulted(Error):
 
     The fault persists until the KRL program restarts (a new session); meanwhile `stream`,
     `move_to`, `notify` and `wait_idle` raise this. `fault` and `stop_program` stay allowed.
+
+    The driver faults a session itself when the robot's telegrams come at another cycle than
+    `cycle_ms` (the message starts with "cycle mismatch"): every duration and speed limit is
+    counted in cycles, so motion would run at the wrong speed.
     """
 
 class Limits:
@@ -107,7 +111,12 @@ class Driver:
         wait: float = 60.0,
     ) -> None:
         """Start the driver for the RSI Ethernet config XML at `config`, the same file as on the
-        robot; None uses the built-in copy of the shipped kuka_rsi_ethernet.xml."""
+        robot; None uses the built-in copy of the shipped kuka_rsi_ethernet.xml.
+
+        `cycle_ms` is the robot's RSI cycle, set by the sensor mode of `RSI_ON` in the robot
+        program: 4 (`#IPO_FAST`, the default) or 12 (`#IPO`). `link_timeout` is raised to 125
+        cycles if it is shorter (1.5 s at 12 ms), so the driver does not give up a session
+        before the robot does."""
     def local_addr(self) -> str: ...
     def robot_addr(self) -> str | None:
         """The robot's address ("ip:port") during a session, else None."""
@@ -213,6 +222,7 @@ def check_setup(
     wait: float = 0.0,
     hold: float = 3.0,
     stop_channel: str = "MoveStop",
+    cycle_ms: float = 4.0,
     report: Callable[[dict[str, Any]], object] | None = None,
 ) -> list[dict[str, Any]]:
     """Check the config (None: the built-in kuka_rsi_ethernet.xml), network address and port,
@@ -223,5 +233,7 @@ def check_setup(
     `report` gets each check as it completes (with "event": "check") and, when the live check
     starts listening, {"event": "listening", "addr", "wait"}: start the robot program then. The
     live check holds the robot for `hold` seconds and ends the program with `stop_channel`.
+    `cycle_ms` is the robot's RSI cycle (4 for `#IPO_FAST`, 12 for `#IPO`); the timing check
+    fails if the robot sends at another one.
     Ctrl-C cancels it and still ends the program cleanly.
     """

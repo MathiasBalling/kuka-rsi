@@ -34,6 +34,14 @@ real robot.
   `rsi-monitor`, `rsi-doctor`, `rsi-sim` without `--config`, `jog` and `stream_trajectory`
   without a file, `Driver()` and `check_setup()` without one, and
   `EthernetConfig::shipped`, `DriverConfig::shipped` and `doctor::Options::default` in Rust.
+- The cycle is a setting for robot programs that run the 12 ms sensor mode
+  (`RSI_ON(#ABSOLUTE, #IPO, #BASE)`): `--cycle-ms` on `rsi-monitor`, `rsi-doctor`, `jog`,
+  `stream_trajectory` and the Python doctor and example, `cycle_ms` in `Driver` and
+  `check_setup`, `DriverConfig::cycle` (which also raises `link_timeout` to 125 cycles). A
+  session whose telegrams come at another cycle than configured is faulted within a few
+  telegrams (`Event::CycleMismatch`, `Error::CycleMismatch`, `Driver::cycle_mismatch`;
+  `Faulted` in Python), and the doctor's timing check names the robot's cycle. The 12 ms mode
+  is not yet confirmed on a robot.
 - Python bindings (`kuka_rsi`, one abi3 wheel per platform for CPython 3.10+, numpy
   1.24+) with type stubs.
 - Controller files for KR C5 / KSS 8.7: RSI contexts, Ethernet configs and KRL programs,

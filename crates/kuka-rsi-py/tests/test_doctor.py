@@ -62,6 +62,22 @@ def test_live_check_against_the_simulator(tmp_path):
     assert sims[0].wait_exit(3.0) == "Stopped"
 
 
+def test_live_check_names_a_cycle_other_than_the_robots(tmp_path):
+    xml = config(tmp_path)
+    port = free_port()
+    sims = []
+
+    def on_progress(event):
+        if event["event"] == "listening":
+            sims.append(kuka_rsi.ControllerSim(xml, f"127.0.0.1:{port}", bind="127.0.0.1:0"))
+
+    checks = kuka_rsi.check_setup(xml, bind=f"127.0.0.1:{port}", wait=5.0, hold=1.0, cycle_ms=12, report=on_progress)
+    timing = by_name(checks)["timing"]
+    assert timing["status"] == "fail", timing
+    assert "every 4 ms, not every 12 ms" in timing["detail"], timing
+    assert "--cycle-ms 4" in timing["hint"], timing
+
+
 def test_module_cli_reports_and_exits_nonzero_on_failure(tmp_path):
     run = subprocess.run(
         [sys.executable, "-m", "kuka_rsi.doctor", "--config", str(tmp_path / "missing.xml")],
