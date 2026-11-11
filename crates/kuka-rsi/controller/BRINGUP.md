@@ -157,5 +157,6 @@ session on the robot are in `docs/sessions/` in the repository.
 | `delay` climbs | The PC answers later than 4 ms; close other load, then consider a Linux PC |
 | Every reply late from the first telegram, `delay` +1 per cycle | Ping the controller, then start again. Seen once after the link sat idle for about 20 minutes, accepted right after a ping; likely the Mac's ARP entry had expired (not proven yet) |
 | `KSS00489 Stop by $CORRECTION function` | RSI stopped the correction, e.g. after the ETHERNET timeout; not by itself a bad correction. Acknowledge, then Edit > Reset program, or the next start resumes at `RSI_MOVECORR()` without RSI and stops at once |
+| `KSS03015 Stop because $SPEED_LIMIT_TEACH_MODE has been exceeded` (with KSS00489), `LinkLost` on the PC | The tool moved faster than T1 allows (250 mm/s). The joint speed that reaches it depends on the pose: an arm stretched to 0.94 m hits it at 15 °/s on A1. Move slower or closer to the base; faster moves need T2 or automatic mode |
 | The robot stops answering pings mid-session | The USB Ethernet adapter's link dropped (`ifconfig` shows `status: inactive`); reseat the adapter and cable |
 | "Caution – sensor correction is activated!!!" at every start | Normal in T1 and T2; acknowledge and press Start again |

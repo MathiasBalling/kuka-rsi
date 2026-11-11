@@ -8,6 +8,7 @@ here into its troubleshooting table.
 | --- | --- | --- |
 | [1](2026-11-05-session-1.md) | 2026-11-05 | First bring-up: monitor, hold, A6 45° |
 | [2](2026-11-05-session-2.md) | 2026-11-05 | Single and multi-axis moves up to 30°, speed steps, streaming and fault-path plan |
+| [3](2026-11-11-session-3.md) | 2026-11-11 | The A1 stop is the T1 speed limit (KSS03015); S4 to S7 |
 
 `--log runs/NAME.csv` on `rsi-monitor`, `jog` and `stream_trajectory` writes every cycle
 (header in `kuka_rsi::record`); `runs/` is ignored by git. Keep the logs of a session together
