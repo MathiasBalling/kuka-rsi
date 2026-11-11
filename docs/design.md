@@ -285,6 +285,7 @@ Each is a module of the `kuka-rsi` crate with one job and its own tests.
 | `kuka_rsi_monitor.xml` | same | Identical with `ONLYSEND` TRUE, for the read-only first step |
 | `kuka_rsi.rsix` | same | RSI 5.0 context adapted from FZI's KR C5 file: `Ethernet` (ConfigFile, `Timeout` 100, `Flag` 1, `Precision` 4), `AxisCorr` fed by Ethernet outputs 1-6 with limits equal to the axis ranges, `AxisCorrMon` with the same, `GearTorque`, `Status` (program state), `OV_PRO` into Ethernet inputs, `Stop` (`ExitMoveCorr`) fed by Ethernet output 7 |
 | `kuka_rsi.src` | `KRC:\R1\Program\` | INI fold, `PTP $AXIS_ACT` (block coincidence where the robot stands; a taught start pose, if used, should have the wrist bent, not `HOME`, see rsi-pi's A5 = 0 finding), `RSI_CREATE("kuka_rsi", CONTID, TRUE)`, `RSI_ON(#ABSOLUTE)` (default `#IPO_FAST`), `RSI_MOVECORR()`, `RSI_OFF()`, `RSI_DELETE`, `PTP $AXIS_ACT`. Every return value checked with `HALT` on error |
+| `kuka_rsi_12ms.src` | same | `kuka_rsi.src` with `RSI_ON(#ABSOLUTE, #IPO, #BASE)`, the 12 ms mode (added later; not confirmed on a robot) |
 | `kuka_rsi_monitor.src` | same | The monitor variant: `RSI_ON`, `WAIT SEC 60`, no `RSI_MOVECORR` |
 | `README.md` | | Where each file goes, the pendant network configuration (Start-up > Network configuration > KLI > Advanced > add interface, Mixed IP address, own subnet, cold start), start order (driver first, then the program), and the bring-up checklist from section 10 |
 

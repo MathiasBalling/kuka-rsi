@@ -14,6 +14,7 @@ NAMES = [
     "kuka_rsi.rsix",
     "kuka_rsi_monitor.rsix",
     "kuka_rsi.src",
+    "kuka_rsi_12ms.src",
     "kuka_rsi_monitor.src",
     "LICENSE-FZI",
     "LICENSE-MIT",

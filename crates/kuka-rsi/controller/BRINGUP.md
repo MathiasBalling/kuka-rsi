@@ -24,7 +24,7 @@ and removes the macOS `._*` files from the stick. The USB folder holds:
 | Folder | Goes to | Contents |
 | --- | --- | --- |
 | `SensorInterface/` | `C:\KRC\ROBOTER\Config\User\Common\SensorInterface\` | 2 × `.xml`, 2 × `.rsix`, as in the repo |
-| `Program/` | `KRC:\R1\Program\` | `kuka_rsi.src`, `kuka_rsi_monitor.src`, CRLF line endings |
+| `Program/` | `KRC:\R1\Program\` | `kuka_rsi.src`, `kuka_rsi_12ms.src` (the 12 ms mode, optional), `kuka_rsi_monitor.src`, CRLF line endings |
 | (top) | stays on the stick | `LICENSE-FZI`, `LICENSE-MIT`, `LICENSE-APACHE` |
 
 `kuka_rsi.src` starts and parks with `PTP $AXIS_ACT`: block coincidence where the robot
@@ -155,7 +155,7 @@ session on the robot are in `docs/sessions/` in the repository.
 | Program halts at `RSI_CREATE` | Read the message window. A file read or parse error: check the file names and that no `._*` files were copied with them. Otherwise a parameter in the `.rsix`: open it in RSIVisual |
 | Program halts at `RSI_ON` | Message window; often the network or the config XML name |
 | `delay` climbs | The PC answers later than 4 ms; close other load, then consider a Linux PC |
-| `cycle mismatch: the robot sends every N ms` on the PC, `Error: cycle mismatch` on the pendant | The program's sensor mode and the PC's cycle differ: `RSI_ON(#ABSOLUTE)` is 4 ms (the tools' default), `RSI_ON(#ABSOLUTE, #IPO, #BASE)` is 12 ms (`--cycle-ms 12`). The driver refuses to move until they agree |
+| `cycle mismatch: the robot sends every N ms` on the PC, `Error: cycle mismatch` on the pendant | The program's sensor mode and the PC's cycle differ: `kuka_rsi` (`RSI_ON(#ABSOLUTE)`) is 4 ms, the tools' default; `kuka_rsi_12ms` (`RSI_ON(#ABSOLUTE, #IPO, #BASE)`) is 12 ms, `--cycle-ms 12`. The driver refuses to move until they agree |
 | Every reply late from the first telegram, `delay` +1 per cycle | Ping the controller, then start again. Seen once after the link sat idle for about 20 minutes, accepted right after a ping; likely the Mac's ARP entry had expired (not proven yet) |
 | `KSS00489 Stop by $CORRECTION function` | RSI stopped the correction, e.g. after the ETHERNET timeout; not by itself a bad correction. Acknowledge, then Edit > Reset program, or the next start resumes at `RSI_MOVECORR()` without RSI and stops at once |
 | `KSS03015 Stop because $SPEED_LIMIT_TEACH_MODE has been exceeded` (with KSS00489), `LinkLost` on the PC | The tool moved faster than T1 allows (250 mm/s). The joint speed that reaches it depends on the pose: an arm stretched to 0.94 m hits it at 15 °/s on A1. Move slower or closer to the base; faster moves need T2 or automatic mode |

@@ -1,0 +1,75 @@
+&ACCESS RVP
+&REL 1
+&PARAM TEMPLATE = C:\KRC\Roboter\Template\vorgabe
+&PARAM EDITMASK = *
+DEF kuka_rsi_12ms( )
+; =========================================================================
+; kuka-rsi driver: https://github.com/MathiasBalling/kuka-rsi
+; Adapted from FZI kuka_rsi_driver (KR C5 program),
+; Copyright 2024 FZI Forschungszentrum Informatik, BSD-3-Clause;
+; see controller/LICENSE-FZI in the repository.
+;
+; kuka_rsi_12ms: kuka_rsi in the 12 ms sensor mode (#IPO), in which the
+; controller filters the corrections ($FILTER). Start the PC tools with
+; --cycle-ms 12 (cycle_ms=12 in Python); the driver refuses to move while
+; its cycle and the robot's differ.
+; NOT YET CONFIRMED ON A ROBOT: the RSI manual documents #IPO for corrected
+; LIN and CIRC paths and does not say that RSI_MOVECORR() runs in it.
+;
+; Context:  kuka_rsi.rsix            (Config\User\Common\SensorInterface)
+; Config:   kuka_rsi_ethernet.xml    (same folder)
+;
+; Start order: start the driver on the PC first (it listens for the first
+; telegram), then select and start this program. The ETHERNET object sends
+; its first telegram at RSI_ON and stops the robot with RSIBad after 100
+; unanswered cycles (1.2 s at 12 ms).
+;
+; The program ends when the driver pulses the MoveStop channel (Stop object,
+; ExitMoveCorr), when the program is cancelled on the pendant, or when RSI
+; reports a communication error.
+; =========================================================================
+DECL INT ret
+DECL INT contid
+
+;FOLD INI
+  ;FOLD BASISTECH INI
+    GLOBAL INTERRUPT DECL 3 WHEN $STOPMESS==TRUE DO IR_STOPM ( )
+    INTERRUPT ON 3
+    BAS (#INITMOV,0 )
+  ;ENDFOLD (BASISTECH INI)
+  ;FOLD USER INI
+    ;Make your modifications here
+  ;ENDFOLD (USER INI)
+;ENDFOLD (INI)
+
+; Block coincidence where the robot stands: no move before RSI starts. The driver
+; captures whatever setpoint it sees first. For a defined start pose, replace
+; $AXIS_ACT with a taught pose, e.g. PTP {A1 0, A2 -90, A3 90, A4 0, A5 90, A6 0}
+; (keep A5 well away from 0).
+PTP $AXIS_ACT
+
+ret = RSI_CREATE("kuka_rsi", contid, TRUE)
+IF (ret <> RSIOK) THEN
+  HALT
+ENDIF
+
+; Absolute corrections in the sensor mode #IPO (12 ms). RSI_ON takes the
+; correction system together with the mode; #BASE is its default.
+ret = RSI_ON(#ABSOLUTE, #IPO, #BASE)
+IF (ret <> RSIOK) THEN
+  HALT
+ENDIF
+
+; Sensor-guided motion: holds the start pose and applies AK from the driver.
+RSI_MOVECORR()
+
+ret = RSI_OFF()
+IF (ret <> RSIOK) THEN
+  HALT
+ENDIF
+ret = RSI_DELETE(contid)
+
+; Stays where RSI left the robot; waits here for Start.
+PTP $AXIS_ACT
+
+END

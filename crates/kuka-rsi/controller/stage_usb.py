@@ -9,7 +9,7 @@ and copy them in one go:
 
   SensorInterface/  the Ethernet configs and RSI contexts, for
                     C:\\KRC\\ROBOTER\\Config\\User\\Common\\SensorInterface\\
-  Program/          the two KRL programs with CRLF line endings, for KRC:\\R1\\Program\\
+  Program/          the KRL programs with CRLF line endings, for KRC:\\R1\\Program\\
   LICENSE-*         stay on the stick
 
 macOS AppleDouble files ("._name") that the copy leaves on FAT/exFAT sticks are removed.
@@ -21,7 +21,7 @@ import pathlib
 HERE = pathlib.Path(__file__).resolve().parent
 CRATE = HERE.parent
 SENSOR_FILES = ["kuka_rsi_ethernet.xml", "kuka_rsi_monitor.xml", "kuka_rsi.rsix", "kuka_rsi_monitor.rsix"]
-PROGRAMS = ["kuka_rsi.src", "kuka_rsi_monitor.src"]
+PROGRAMS = ["kuka_rsi.src", "kuka_rsi_12ms.src", "kuka_rsi_monitor.src"]
 LICENSES = [HERE / "LICENSE-FZI", CRATE / "LICENSE-MIT", CRATE / "LICENSE-APACHE"]
 SENSOR_INTERFACE_DIR = "C:\\KRC\\ROBOTER\\Config\\User\\Common\\SensorInterface\\"
 PROGRAM_DIR = "KRC:\\R1\\Program\\"

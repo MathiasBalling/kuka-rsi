@@ -35,6 +35,7 @@ pub const FILES: &[ControllerFile] = &[
     file("kuka_rsi.rsix", include_str!("../controller/kuka_rsi.rsix"), Some(SENSOR_INTERFACE_DIR)),
     file("kuka_rsi_monitor.rsix", include_str!("../controller/kuka_rsi_monitor.rsix"), Some(SENSOR_INTERFACE_DIR)),
     file("kuka_rsi.src", include_str!("../controller/kuka_rsi.src"), Some(PROGRAM_DIR)),
+    file("kuka_rsi_12ms.src", include_str!("../controller/kuka_rsi_12ms.src"), Some(PROGRAM_DIR)),
     file("kuka_rsi_monitor.src", include_str!("../controller/kuka_rsi_monitor.src"), Some(PROGRAM_DIR)),
     file("LICENSE-FZI", include_str!("../controller/LICENSE-FZI"), None),
     file("LICENSE-MIT", include_str!("../LICENSE-MIT"), None),

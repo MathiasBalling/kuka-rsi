@@ -40,8 +40,9 @@ real robot.
   `check_setup`, `DriverConfig::cycle` (which also raises `link_timeout` to 125 cycles). A
   session whose telegrams come at another cycle than configured is faulted within a few
   telegrams (`Event::CycleMismatch`, `Error::CycleMismatch`, `Driver::cycle_mismatch`;
-  `Faulted` in Python), and the doctor's timing check names the robot's cycle. The 12 ms mode
-  is not yet confirmed on a robot.
+  `Faulted` in Python), and the doctor's timing check names the robot's cycle. The controller
+  files include `kuka_rsi_12ms.src`, the same program in that mode. The 12 ms mode is not
+  yet confirmed on a robot.
 - Python bindings (`kuka_rsi`, one abi3 wheel per platform for CPython 3.10+, numpy
   1.24+) with type stubs.
 - Controller files for KR C5 / KSS 8.7: RSI contexts, Ethernet configs and KRL programs,

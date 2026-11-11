@@ -34,7 +34,7 @@ python -m kuka_rsi.controller robot_files/   # writes them, prints where each on
 robot_files/
   SensorInterface/   kuka_rsi_ethernet.xml, kuka_rsi_monitor.xml, kuka_rsi.rsix, kuka_rsi_monitor.rsix
                      -> C:\KRC\ROBOTER\Config\User\Common\SensorInterface\
-  Program/           kuka_rsi.src, kuka_rsi_monitor.src (CRLF) -> KRC:\R1\Program\
+  Program/           kuka_rsi.src, kuka_rsi_12ms.src, kuka_rsi_monitor.src (CRLF) -> KRC:\R1\Program\
   LICENSE-FZI, LICENSE-MIT, LICENSE-APACHE (stay on the PC)
 ```
 
@@ -157,7 +157,7 @@ holding the command short). `Limits.kr10_defaults()` keeps an acceleration limit
   Shorter, the driver may declare a session lost that the robot still keeps, and the next
   telegram would start a new session with `q_start` captured mid-motion.
 - The cycle is 4 ms, the default sensor mode of `RSI_ON` (`#IPO_FAST`). For a robot program
-  that runs the 12 ms mode (`RSI_ON(#ABSOLUTE, #IPO, #BASE)`) set `cycle_ms=12` (Rust:
+  that runs the 12 ms mode (`RSI_ON(#ABSOLUTE, #IPO, #BASE)`, shipped as `kuka_rsi_12ms.src`) set `cycle_ms=12` (Rust:
   `DriverConfig::cycle`, tools: `--cycle-ms 12`); `link_timeout` then rises to 1.5 s. The 12 ms
   mode is not yet confirmed on a robot. If the robot's telegrams come at another cycle than
   the driver is set to, the driver faults the session within a few telegrams and motion calls

@@ -7,6 +7,7 @@ const MON: &str = include_str!("../controller/kuka_rsi_monitor.xml");
 const RSIX: &str = include_str!("../controller/kuka_rsi.rsix");
 const RSIX_MON: &str = include_str!("../controller/kuka_rsi_monitor.rsix");
 const SRC: &str = include_str!("../controller/kuka_rsi.src");
+const SRC_12MS: &str = include_str!("../controller/kuka_rsi_12ms.src");
 const SRC_MON: &str = include_str!("../controller/kuka_rsi_monitor.src");
 
 #[test]
@@ -84,12 +85,34 @@ fn krl_programs_use_the_expected_calls() {
     assert!(!SRC_MON.contains("RSI_MOVECORR"));
 }
 
-const BUNDLED: [&str; 9] = [
+/// `kuka_rsi_12ms` is `kuka_rsi` in the 12 ms sensor mode: same context, same statements, only
+/// the program name and the `RSI_ON` call differ.
+#[test]
+fn the_12_ms_program_differs_only_in_name_and_sensor_mode() {
+    let statements = |src: &'static str| -> Vec<&'static str> {
+        let keep =
+            |l: &&str| !l.is_empty() && (!l.starts_with(';') || l.starts_with(";FOLD") || l.starts_with(";ENDFOLD"));
+        src.lines().map(str::trim).filter(keep).collect()
+    };
+    let (fast, slow) = (statements(SRC), statements(SRC_12MS));
+    assert_eq!(fast.len(), slow.len());
+    let differing: Vec<(&str, &str)> = fast.into_iter().zip(slow).filter(|(a, b)| a != b).collect();
+    assert_eq!(
+        differing,
+        [
+            ("DEF kuka_rsi( )", "DEF kuka_rsi_12ms( )"),
+            ("ret = RSI_ON(#ABSOLUTE)", "ret = RSI_ON(#ABSOLUTE, #IPO, #BASE)")
+        ]
+    );
+}
+
+const BUNDLED: [&str; 10] = [
     "kuka_rsi_ethernet.xml",
     "kuka_rsi_monitor.xml",
     "kuka_rsi.rsix",
     "kuka_rsi_monitor.rsix",
     "kuka_rsi.src",
+    "kuka_rsi_12ms.src",
     "kuka_rsi_monitor.src",
     "LICENSE-FZI",
     "LICENSE-MIT",

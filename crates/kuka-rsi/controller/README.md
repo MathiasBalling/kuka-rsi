@@ -11,6 +11,7 @@ First bring-up, step by step (network, USB staging, first three tests): `BRINGUP
 | `kuka_rsi.rsix` | same | RSI context: Ethernet, AxisCorr, AxisCorrMon, Stop, GearTorque, Status, OV_PRO |
 | `kuka_rsi_monitor.rsix` | same | Same context pointing at the monitor config |
 | `kuka_rsi.src` | `KRC:\R1\Program\` | `PTP $AXIS_ACT` (no move), `RSI_ON(#ABSOLUTE)`, `RSI_MOVECORR()` |
+| `kuka_rsi_12ms.src` | `KRC:\R1\Program\` | `kuka_rsi` in the 12 ms sensor mode, `RSI_ON(#ABSOLUTE, #IPO, #BASE)`, same context; run the PC tools with `--cycle-ms 12`. Not yet confirmed on a robot |
 | `kuka_rsi_monitor.src` | `KRC:\R1\Program\` | `RSI_ON`, `WAIT SEC 60`, no motion |
 
 Copy them with WorkVisual (drag into `SensorInterface` and `Program` in the project
