@@ -75,10 +75,11 @@ The shipped `.rsix` files are LF-terminated UTF-8 without a BOM. If WorkVisual r
 them, convert them to CRLF with a BOM (e.g. `unix2dos -m`) before importing.
 
 All three programs set the tool and base in their USER INI fold (`tool_no`, `base_no`,
-default tool 1 in WORLD), because `BAS (#INITMOV)` clears `$TOOL` and `$BASE` at every
+default tool 2 in WORLD), because `BAS (#INITMOV)` clears `$TOOL` and `$BASE` at every
 program reset. Change the two numbers to the tool and base taught on the robot before
 staging; `RIst` in the telegrams is that tool's TCP in that base. The joint corrections
-(`AK`) do not depend on them.
+(`AK`) do not depend on them. `$LOAD` is set only when the tool's payload has been entered
+(mass not -1); otherwise the controller refuses it with KSS01446 and the active load stays.
 
 Read the machine data (`$SOFTN_END`, `$SOFTP_END`, axis speeds) from the pendant and
 put them into `Limits` before step 3. The driver enforces the true joint limits

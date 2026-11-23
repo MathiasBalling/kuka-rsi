@@ -33,11 +33,15 @@ DECL INT base_no
     ; was active on the pendant is lost at every program reset; set them here.
     ; RIst in the telegrams is the TCP of this tool in this base. Use the numbers
     ; taught on this robot: tool_no 1..16 (TOOL_DATA, LOAD_DATA), base_no 1..32
-    ; (BASE_DATA) or 0 for WORLD.
-    tool_no = 1
+    ; (BASE_DATA) or 0 for WORLD. A tool without payload data has mass -1,
+    ; which $LOAD refuses (KSS01446); the active load is then kept. Enter the
+    ; payload on the pendant for the robot to use it.
+    tool_no = 2
     base_no = 0
     $TOOL = TOOL_DATA[tool_no]
-    $LOAD = LOAD_DATA[tool_no]
+    IF LOAD_DATA[tool_no].M >= 0 THEN
+      $LOAD = LOAD_DATA[tool_no]
+    ENDIF
     $ACT_TOOL = tool_no
     IF base_no > 0 THEN
       $BASE = BASE_DATA[base_no]

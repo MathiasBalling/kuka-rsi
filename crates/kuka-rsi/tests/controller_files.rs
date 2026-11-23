@@ -227,6 +227,7 @@ fn every_program_sets_tool_and_base_after_initmov() {
     for l in [
         "$TOOL = TOOL_DATA[tool_no]",
         "$LOAD = LOAD_DATA[tool_no]",
+        "IF LOAD_DATA[tool_no].M >= 0 THEN",
         "$ACT_TOOL = tool_no",
         "$BASE = BASE_DATA[base_no]",
         "$ACT_BASE = base_no",
