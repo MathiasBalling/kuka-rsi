@@ -74,6 +74,12 @@ RSI needs its own sensor network, separate from the EKI addresses (`172.31.1.x`)
 The shipped `.rsix` files are LF-terminated UTF-8 without a BOM. If WorkVisual refuses
 them, convert them to CRLF with a BOM (e.g. `unix2dos -m`) before importing.
 
+All three programs set the tool and base in their USER INI fold (`tool_no`, `base_no`,
+default tool 1 in WORLD), because `BAS (#INITMOV)` clears `$TOOL` and `$BASE` at every
+program reset. Change the two numbers to the tool and base taught on the robot before
+staging; `RIst` in the telegrams is that tool's TCP in that base. The joint corrections
+(`AK`) do not depend on them.
+
 Read the machine data (`$SOFTN_END`, `$SOFTP_END`, axis speeds) from the pendant and
 put them into `Limits` before step 3. The driver enforces the true joint limits
 (`position_min/max`) on every target and every cycle. `AxisCorr` and `AxisCorrMon` bound

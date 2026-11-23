@@ -209,3 +209,33 @@ fn the_program_starts_and_ends_where_the_robot_stands() {
     let ptps: Vec<&str> = src.lines().map(str::trim).filter(|l| l.starts_with("PTP")).collect();
     assert_eq!(ptps, ["PTP $AXIS_ACT", "PTP $AXIS_ACT"]);
 }
+
+/// `BAS (#INITMOV)` clears `$TOOL` and `$BASE`, so every program sets them again after it, in the
+/// USER INI fold, all three the same way: a program reset must not lose the tool and base that
+/// `RIst` is reported in.
+#[test]
+fn every_program_sets_tool_and_base_after_initmov() {
+    let user_ini = |src: &'static str| -> Vec<&'static str> {
+        let lines: Vec<&str> = src.lines().map(str::trim).collect();
+        let initmov = lines.iter().position(|l| *l == "BAS (#INITMOV,0 )").expect("BAS (#INITMOV)");
+        let start = lines.iter().position(|l| *l == ";FOLD USER INI").expect("USER INI fold");
+        let end = lines.iter().position(|l| *l == ";ENDFOLD (USER INI)").expect("end of USER INI fold");
+        assert!(initmov < start, "tool and base must be set after BAS (#INITMOV)");
+        lines[start + 1..end].iter().copied().filter(|l| !l.starts_with(';')).collect()
+    };
+    let block = user_ini(SRC);
+    for l in [
+        "$TOOL = TOOL_DATA[tool_no]",
+        "$LOAD = LOAD_DATA[tool_no]",
+        "$ACT_TOOL = tool_no",
+        "$BASE = BASE_DATA[base_no]",
+        "$ACT_BASE = base_no",
+    ] {
+        assert!(block.contains(&l), "kuka_rsi.src: missing {l}");
+    }
+    assert_eq!(user_ini(SRC_12MS), block, "kuka_rsi_12ms.src");
+    assert_eq!(user_ini(SRC_MON), block, "kuka_rsi_monitor.src");
+    for src in [SRC, SRC_12MS, SRC_MON] {
+        assert!(src.contains("DECL INT tool_no") && src.contains("DECL INT base_no"));
+    }
+}

@@ -30,6 +30,8 @@ DEF kuka_rsi_12ms( )
 ; =========================================================================
 DECL INT ret
 DECL INT contid
+DECL INT tool_no
+DECL INT base_no
 
 ;FOLD INI
   ;FOLD BASISTECH INI
@@ -39,6 +41,23 @@ DECL INT contid
   ;ENDFOLD (BASISTECH INI)
   ;FOLD USER INI
     ;Make your modifications here
+    ; Tool and base. BAS (#INITMOV) above clears $TOOL and $BASE, so whatever
+    ; was active on the pendant is lost at every program reset; set them here.
+    ; RIst in the telegrams is the TCP of this tool in this base. Use the numbers
+    ; taught on this robot: tool_no 1..16 (TOOL_DATA, LOAD_DATA), base_no 1..32
+    ; (BASE_DATA) or 0 for WORLD.
+    tool_no = 1
+    base_no = 0
+    $TOOL = TOOL_DATA[tool_no]
+    $LOAD = LOAD_DATA[tool_no]
+    $ACT_TOOL = tool_no
+    IF base_no > 0 THEN
+      $BASE = BASE_DATA[base_no]
+    ELSE
+      $BASE = $NULLFRAME
+    ENDIF
+    $ACT_BASE = base_no
+    $IPO_MODE = #BASE
   ;ENDFOLD (USER INI)
 ;ENDFOLD (INI)
 
