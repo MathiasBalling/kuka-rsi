@@ -225,7 +225,9 @@ fn every_program_sets_tool_and_base_after_initmov() {
     };
     let block = user_ini(SRC);
     for l in [
+        "IF tool_no > 0 THEN",
         "$TOOL = TOOL_DATA[tool_no]",
+        "$TOOL = $NULLFRAME",
         "$LOAD = LOAD_DATA[tool_no]",
         "IF LOAD_DATA[tool_no].M >= 0 THEN",
         "$ACT_TOOL = tool_no",
