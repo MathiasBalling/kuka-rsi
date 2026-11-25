@@ -25,6 +25,28 @@ class Faulted(Error):
     counted in cycles, so motion would run at the wrong speed.
     """
 
+class Paused(TimeoutError):
+    """Playback stood still for longer than the `pause_timeout` of a wait.
+
+    The robot program is stopped (the enabling switch or Start was released), or the pendant
+    override or the speed scale is 0. The motion is still queued and continues when playback
+    runs again. A `TimeoutError`, so code that catches that keeps working; catch `Paused` first
+    to tell it from a command that cannot settle.
+    """
+
+class Interrupted(Error):
+    """The motion a wait was for did not finish: `hold`, `move_to` or `stream(replace=True)`
+    dropped it, from this thread or another."""
+
+class Motion:
+    """What `Driver.move_to` and `Driver.stream` queued, for `Driver.wait_idle(motion=...)`.
+
+    A motion starts when the queue is dropped (`move_to`, `hold`, `stream(replace=True)`) and
+    includes everything appended to it since: `stream` without `replace` returns the motion it
+    extended. Motions compare equal when they are the same one.
+    """
+    def __eq__(self, other: object) -> bool: ...
+
 class Limits:
     @staticmethod
     def kr10_defaults(max_velocity: float | None = None, max_acceleration: float | None = ...) -> Limits:
@@ -132,32 +154,82 @@ class Driver:
         session ends ("Lost"), `is_faulted()` turns false and those calls raise `LinkLost`
         until the KRL program restarts (a new session).
         """
+    def last_session_end(self) -> str | None:
+        """Why the last session ended, None until one has; kept while the next one runs.
+
+        "StopRequested": the driver pulsed the stop channel (`stop_program`, `close`) and the
+        telegrams stopped soon after. "Fault": the session was faulted. "LinkTimeout": the
+        telegrams stopped unasked (the program ended, was reset or stopped with an error on the
+        robot, or the link dropped). "Closed": the driver was closed while the robot was still
+        sending. "Panic": the real-time thread panicked. Read it when `session()` turns "Lost"
+        or a call raises `LinkLost`.
+        """
+    def is_paused(self) -> bool:
+        """True while playback stands still in an active session: the robot program is stopped
+        (the enabling switch or Start was released), or the pendant override or the speed scale
+        is 0. Queued motion continues when it runs again."""
+    def is_idle(self) -> bool:
+        """True when every queued command has been applied, the queue is empty and the command
+        has settled: what `wait_idle` waits for, without blocking.
+
+        Raises as `wait_idle` does: `LinkLost` or `ProtocolError` outside a session, `Faulted`
+        on a faulted one.
+        """
     def wait_for_robot(self, timeout: float = 60.0) -> None: ...
-    def wait_idle(self, timeout: float = 10.0) -> None:
+    def wait_idle(
+        self, timeout: float = 10.0, *, motion: Motion | None = None, pause_timeout: float | None = None
+    ) -> None:
         """Wait until the queue has drained and the command has settled.
 
-        Raises `TimeoutError` if that takes longer than `timeout`, and `Faulted` once a
-        `fault()` has frozen the command.
+        `timeout` counts playback time, not wall time: playback follows the pendant override
+        and the speed scale and stands still while the robot program is stopped. A 2 s move is
+        given the same room at 10 % override (20 s) and across a released enabling switch.
+        `TimeoutError` therefore means playback ran for `timeout` and the command still had not
+        settled, e.g. a limit holds it short of the target.
+
+        While playback stands still the wait goes on: for as long as it takes, or with
+        `pause_timeout` (seconds) until that has passed, then `Paused`. With `motion` (from
+        `move_to` or `stream`) the wait raises `Interrupted` if that motion was held or
+        replaced, and `LinkLost` if its session has ended; without it, the wait is for whatever
+        is queued and returns normally after a `hold`. Raises `Faulted` once a `fault()` has
+        frozen the command. Ctrl-C (KeyboardInterrupt) ends the wait within 50 ms.
         """
     def state(self) -> RobotState: ...
     def stats(self) -> Stats: ...
-    def events(self) -> list[str]: ...
+    def events(self) -> list[dict[str, Any]]:
+        """The events since the last call, oldest first, one dict each.
+
+        Every dict has `kind` and `t`, the driver time in seconds on the clock of
+        `RobotState.t`: an event raised in a cycle has the `t` of that cycle's `drain_log` row.
+        Kinds with fields: "RobotConnected" (`ipoc`), "SessionEnded" (`reason`, as
+        `last_session_end`), "LateReply" (`latency_us`), "Clamped" (`limit`: "Position",
+        "Velocity", "Acceleration", "Correction"), "TrackingError" (`error_rad`),
+        "CycleMismatch" (`robot_ms`, `configured_ms`), "RtPriority" (`ok`). Without fields:
+        "ParseError", "IoError", "SentypeMismatch", "Starved", "CommandRejected", "Fault",
+        "Notified", "StopPulsed", "Panic", "LogDropped".
+        """
     def drain_log(self) -> list[RobotState]: ...
-    def stream(self, points: ArrayLike, dt: float, replace: bool = False) -> None:
+    def stream(self, points: ArrayLike, dt: float, replace: bool = False) -> Motion:
         """Queue absolute joint targets (rad), `dt` seconds apart.
 
+        Returns the motion the points belong to: a new one with `replace`, else the one they
+        were appended to. Raises `Faulted` after a `fault()`, until the KRL program restarts.
+        """
+    def move_to(
+        self, q: ArrayLike, duration: float, block: bool = False, *, pause_timeout: float | None = None
+    ) -> Motion:
+        """Smooth (quintic) move to `q` over `duration` seconds; drops what was queued.
+
+        With `block=True`, waits as `wait_idle(duration + 5.0, motion=..., pause_timeout=...)`
+        does: the 5 s are for the motion limiter to settle, and all of it is playback time, so
+        a low override or a stopped program does not use it up. `TimeoutError` if a clamp keeps
+        the command short of the target for that long, `Paused` after `pause_timeout` of a
+        stopped program, `Interrupted` if a `hold` or another motion cut the move short.
         Raises `Faulted` after a `fault()`, until the KRL program restarts.
         """
-    def move_to(self, q: ArrayLike, duration: float, block: bool = False) -> None:
-        """Smooth (quintic) move to `q` over `duration` seconds.
-
-        With `block=True`, waits on `wait_idle` with a `duration + 5.0` second timeout
-        (not just `duration`): `wait_idle` also waits for the motion limiter to settle,
-        and raises `TimeoutError` if a clamp keeps the command short of the target or the
-        program is paused for longer than that timeout. Raises `Faulted` after a `fault()`,
-        until the KRL program restarts.
-        """
-    def hold(self) -> None: ...
+    def hold(self) -> None:
+        """Drop the queue and hold the current command. A wait for the motion that was queued
+        raises `Interrupted`."""
     def fault(self, msg: str) -> None:
         """Stop the robot through `EStr` (`Error: msg`) and freeze the command.
 
@@ -204,6 +276,12 @@ class ControllerSim:
         `q_setpoint_deg`, `q_actual_deg`, `last_ak_deg`, `clamped`, `exit`).
         """
 
+    def set_program_running(self, running: bool) -> None:
+        """Report the program as running or stopped from the next telegram on: what releasing
+        the enabling switch or the Start key does. The driver pauses playback while it is
+        stopped."""
+    def set_override_percent(self, percent: float) -> None:
+        """The pendant override (0 to 100) from the next telegram on."""
     def wait_exit(self, timeout: float) -> str | None: ...
     def stop(self) -> str: ...
     def __enter__(self) -> Self: ...

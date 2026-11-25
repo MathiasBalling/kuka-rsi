@@ -2,7 +2,7 @@
 
 use std::io::ErrorKind;
 use std::net::{SocketAddr, UdpSocket};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -34,7 +34,10 @@ pub struct SimConfig {
     /// Uniform ±jitter added to each send time.
     pub jitter: Duration,
     pub drop_probability: f64,
+    /// Reported in `OvPro`; `SimHandle::set_override_percent` changes it during a run.
     pub override_percent: f64,
+    /// Reported in `ProgStatus` (3 running, 4 stopped); `SimHandle::set_program_running` changes
+    /// it during a run. The simulator keeps applying `AK` either way.
     pub program_running: bool,
     pub stop_channel: Option<String>,
     pub max_cycles: Option<u64>,
@@ -143,12 +146,20 @@ impl XorShift {
     }
 }
 
+/// What a `SimHandle` can change while the simulator runs.
+struct Live {
+    program_running: AtomicBool,
+    /// `f64` bits.
+    override_percent: AtomicU64,
+}
+
 pub struct ControllerSim {
     cfg: SimConfig,
     schema: Schema,
     socket: UdpSocket,
     status: Arc<Mutex<SimStatus>>,
     stop: Arc<AtomicBool>,
+    live: Arc<Live>,
 }
 
 impl ControllerSim {
@@ -156,12 +167,17 @@ impl ControllerSim {
         cfg.validate()?;
         let schema = Schema::compile(&cfg.ethernet)?;
         let socket = UdpSocket::bind(cfg.bind)?;
+        let live = Arc::new(Live {
+            program_running: AtomicBool::new(cfg.program_running),
+            override_percent: AtomicU64::new(cfg.override_percent.to_bits()),
+        });
         Ok(ControllerSim {
             cfg,
             schema,
             socket,
             status: Arc::new(Mutex::new(SimStatus::default())),
             stop: Arc::new(AtomicBool::new(false)),
+            live,
         })
     }
 
@@ -214,12 +230,6 @@ impl ControllerSim {
         let seed = if cfg.seed == 0 { 0x9E37_79B9_7F4A_7C15 } else { cfg.seed };
         let mut rng = XorShift(seed);
         let mut tele = RobotTelegram { aspos: cfg.q_start_deg, aipos: cfg.q_start_deg, ..Default::default() };
-        if let Some(s) = map.prog_status {
-            tele.slots[s] = if cfg.program_running { 3.0 } else { 4.0 };
-        }
-        if let Some(s) = map.ov_pro {
-            tele.slots[s] = cfg.override_percent;
-        }
         let mut sen = SensorTelegram::default();
         let mut out = Vec::with_capacity(4096);
         let mut rx = vec![0u8; 65536];
@@ -266,6 +276,12 @@ impl ControllerSim {
                     Some(SimExit::MaxCycles),
                 );
                 return Ok(SimExit::MaxCycles);
+            }
+            if let Some(s) = map.prog_status {
+                tele.slots[s] = if self.live.program_running.load(Ordering::Relaxed) { 3.0 } else { 4.0 };
+            }
+            if let Some(s) = map.ov_pro {
+                tele.slots[s] = f64::from_bits(self.live.override_percent.load(Ordering::Relaxed));
             }
             tele.ipoc = ipoc;
             tele.delay = late;
@@ -447,14 +463,16 @@ impl ControllerSim {
         let addr = sim.local_addr()?;
         let status = sim.status.clone();
         let stop = sim.stop.clone();
+        let live = sim.live.clone();
         let thread = std::thread::Builder::new().name("rsi-sim".into()).spawn(move || sim.run())?;
-        Ok(SimHandle { status, stop, thread: Some(thread), addr })
+        Ok(SimHandle { status, stop, live, thread: Some(thread), addr })
     }
 }
 
 pub struct SimHandle {
     status: Arc<Mutex<SimStatus>>,
     stop: Arc<AtomicBool>,
+    live: Arc<Live>,
     thread: Option<JoinHandle<Result<SimExit>>>,
     addr: SocketAddr,
 }
@@ -466,6 +484,17 @@ impl SimHandle {
 
     pub fn local_addr(&self) -> SocketAddr {
         self.addr
+    }
+
+    /// Report the program as running (`ProgStatus` 3) or stopped (4) from the next telegram on:
+    /// what releasing the enabling switch or the Start key does.
+    pub fn set_program_running(&self, running: bool) {
+        self.live.program_running.store(running, Ordering::Relaxed);
+    }
+
+    /// The pendant override (`OvPro`, 0 to 100) from the next telegram on.
+    pub fn set_override_percent(&self, percent: f64) {
+        self.live.override_percent.store(percent.to_bits(), Ordering::Relaxed);
     }
 
     pub fn is_finished(&self) -> bool {
@@ -654,6 +683,27 @@ mod tests {
             }
         }
         assert_eq!(h.wait_exit(Duration::from_secs(1)), Some(SimExit::EStrError));
+    }
+
+    #[test]
+    fn program_state_and_override_change_while_running() {
+        let mut pc = Pc::new();
+        let mut h = ControllerSim::spawn(pc.sim_config(10)).unwrap();
+        // Telegrams until `ProgStatus` (slot 6) and `OvPro` (slot 7) read as given, at most 10.
+        let reads = |pc: &mut Pc, status: f64, ov: f64| {
+            (0..10).any(|_| {
+                let from = pc.recv().unwrap();
+                pc.reply(from, |_| {});
+                pc.tele.slots[6] == status && pc.tele.slots[7] == ov
+            })
+        };
+        assert!(reads(&mut pc, 3.0, 100.0), "running at full override: {:?}", &pc.tele.slots[6..8]);
+        h.set_program_running(false);
+        h.set_override_percent(50.0);
+        assert!(reads(&mut pc, 4.0, 50.0), "stopped at half override: {:?}", &pc.tele.slots[6..8]);
+        h.set_program_running(true);
+        assert!(reads(&mut pc, 3.0, 50.0), "running again: {:?}", &pc.tele.slots[6..8]);
+        h.stop().unwrap();
     }
 
     #[test]

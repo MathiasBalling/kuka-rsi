@@ -148,7 +148,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         back = max(1.875 * a.amp / a.speed, 2.0)
         drv.move_to(q0, duration=back)
-        drv.wait_idle(back * 10 + 30)
+        # The timeout counts playback time: a low override or a stopped program does not use it up.
+        drv.wait_idle(back + 30)
         drain()
         err = max(abs(math.degrees(drv.state().q[i] - q0[i])) for i in a.axes)
         print(f"back at the start pose, largest error {err:.3f} deg")

@@ -14,8 +14,8 @@ use crossbeam_queue::ArrayQueue;
 use crate::config::{DriverConfig, Limits};
 use crate::control::{Command, MAX_CHUNK, MAX_QUEUE, Session};
 use crate::link::UdpLink;
-use crate::state::{RobotState, SessionState, StateMap};
-use crate::stats::{Event, Stats};
+use crate::state::{RobotState, SessionEnd, SessionState, StateMap};
+use crate::stats::{Event, Stats, TimedEvent};
 use crate::telegram::{Keyword, ParseError, Parser, RobotTelegram, Schema, SensorTelegram, Writer};
 use crate::{Error, Result};
 
@@ -28,9 +28,21 @@ pub const EVENT_HISTORY: usize = 1024;
 
 struct Shared {
     commands: ArrayQueue<Command>,
-    events: ArrayQueue<Event>,
+    events: ArrayQueue<TimedEvent>,
     stop: AtomicBool,
     session: AtomicU8,
+    /// `Stats::sessions`: the number of the current or last session. Stored before `session`
+    /// turns `Active`.
+    session_id: AtomicU64,
+    /// Why the last session ended (`end_to_u8`), 0 while none has.
+    session_end: AtomicU8,
+    /// Motions started so far. Raised under the `motion` lock by every call that drops what was
+    /// queued (`move_to`, `hold`, `stream` with `replace`); never touched by the real-time thread.
+    motion: AtomicU64,
+    /// Playback time in microseconds: `Session::played` times the cycle.
+    played_us: AtomicU64,
+    /// A session is active and its playback stands still (`Session::is_paused`).
+    paused: AtomicBool,
     queue_len: AtomicU32,
     /// Commands pushed by the API and not yet applied and published by the real-time thread.
     /// Raised before the push, lowered after the `publish` that reflects the command, so
@@ -86,6 +98,27 @@ fn session_to_u8(s: SessionState) -> u8 {
     }
 }
 
+fn end_to_u8(e: SessionEnd) -> u8 {
+    match e {
+        SessionEnd::StopRequested => 1,
+        SessionEnd::Fault => 2,
+        SessionEnd::LinkTimeout => 3,
+        SessionEnd::Closed => 4,
+        SessionEnd::Panic => 5,
+    }
+}
+
+fn end_from_u8(v: u8) -> Option<SessionEnd> {
+    match v {
+        1 => Some(SessionEnd::StopRequested),
+        2 => Some(SessionEnd::Fault),
+        3 => Some(SessionEnd::LinkTimeout),
+        4 => Some(SessionEnd::Closed),
+        5 => Some(SessionEnd::Panic),
+        _ => None,
+    }
+}
+
 /// Try to make the current thread real-time. Returns whether it worked.
 pub(crate) fn raise_priority() -> bool {
     #[cfg(target_os = "linux")]
@@ -123,7 +156,12 @@ struct Rt {
     writer: Writer,
     onlysend: bool,
     cycle: Duration,
+    /// The cycle in microseconds.
+    cycle_us: f64,
     link_timeout: Duration,
+    /// Arrival time of the telegram being handled (the `RobotState::t` of its cycle); `None`
+    /// in an iteration without one.
+    t_cycle: Option<f64>,
     /// IPOC increment between consecutive telegrams: the cycle in milliseconds.
     ipoc_step: u64,
     map: StateMap,
@@ -160,8 +198,10 @@ struct Rt {
 }
 
 impl Rt {
+    /// Record an event: at the time of the telegram being handled, else now.
     fn event(&self, e: Event) {
-        let _ = self.shared.events.push(e);
+        let t = self.t_cycle.unwrap_or_else(|| self.shared.start.elapsed().as_secs_f64());
+        let _ = self.shared.events.push(TimedEvent { t, event: e });
     }
 
     /// Takes effect for callers at the next `publish`, after the state that carries it.
@@ -193,6 +233,11 @@ impl Rt {
         self.shared.settled.store(self.session.is_settled(), Ordering::Release);
         self.shared.faulted.store(self.session.is_faulted(), Ordering::Release);
         self.shared.queue_len.store(self.stats.queue_len, Ordering::Release);
+        self.shared.played_us.store((self.session.played() * self.cycle_us) as u64, Ordering::Release);
+        let paused = self.session.state() == SessionState::Active && self.session.is_paused();
+        self.shared.paused.store(paused, Ordering::Release);
+        // Before `session`: a caller that sees `Active` reads the number of that session.
+        self.shared.session_id.store(self.stats.sessions, Ordering::Release);
         self.shared.session.store(session_to_u8(self.state.session), Ordering::Release);
     }
 
@@ -228,10 +273,12 @@ impl Rt {
         }
     }
 
-    fn lose_link(&mut self) {
-        self.session.lost();
+    fn lose_link(&mut self, reason: SessionEnd) {
+        self.session.lost(reason);
         self.link.reset_peer();
         self.shared.robot_addr.store(0, Ordering::Release);
+        // Before the `publish` that shows `Lost`: a caller that sees it reads this session's reason.
+        self.shared.session_end.store(end_to_u8(reason), Ordering::Release);
         self.set_session(SessionState::Lost);
         self.drain_session_events();
         self.publish();
@@ -243,7 +290,7 @@ impl Rt {
     fn no_telegram(&mut self) {
         if self.session.state() == SessionState::Active && self.last_rx.is_some_and(|t| t.elapsed() > self.link_timeout)
         {
-            self.lose_link();
+            self.lose_link(self.session.end_reason());
         }
         if self.session.state() != SessionState::Active {
             self.drain_commands_inactive();
@@ -290,6 +337,8 @@ impl Rt {
             }
         }
         self.last_rx = Some(rx.arrived);
+        let t = rx.arrived.duration_since(self.shared.start).as_secs_f64();
+        self.t_cycle = Some(t);
 
         match self.parser.parse(&self.rx[..rx.len], &mut self.tele) {
             Ok(()) => self.tele_good = self.tele,
@@ -355,7 +404,7 @@ impl Rt {
         self.last_ipoc = Some(self.tele.ipoc);
 
         self.state.update_from(&self.tele, &self.map);
-        self.state.t = rx.arrived.duration_since(self.shared.start).as_secs_f64();
+        self.state.t = t;
         self.stats.robot_delay = self.tele.delay;
 
         while let Some(cmd) = self.pop_command() {
@@ -409,6 +458,7 @@ fn run_rt(mut rt: Rt) {
     let mut recv_errors = 0u32;
     while !rt.shared.stop.load(Ordering::Relaxed) {
         rt.io_failed = false;
+        rt.t_cycle = None;
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rt.cycle())) {
             Ok(Ok(())) => recv_errors = 0,
             Ok(Err(_)) => {
@@ -421,7 +471,7 @@ fn run_rt(mut rt: Rt) {
             Err(_) => {
                 recv_errors = 0;
                 rt.event(Event::Panic);
-                rt.lose_link();
+                rt.lose_link(SessionEnd::Panic);
             }
         }
         // After every path's last `publish`, including a cycle cut short by an error or a panic.
@@ -435,8 +485,13 @@ fn run_rt(mut rt: Rt) {
         }
     }
     // Stopped by `close`: nobody answers the robot any more.
-    rt.set_session(SessionState::Lost);
-    rt.publish();
+    rt.t_cycle = None;
+    if rt.session.state() == SessionState::Active {
+        rt.lose_link(SessionEnd::Closed);
+    } else {
+        rt.set_session(SessionState::Lost);
+        rt.publish();
+    }
 }
 
 /// Allows one log line per event kind (`Clamped(_)` is one kind) per `min_interval`.
@@ -466,7 +521,9 @@ fn level_of(e: &Event) -> log::Level {
     match e {
         // An error, so the tools show it without a log level set: the run cannot continue.
         Event::CycleMismatch { .. } => log::Level::Error,
-        Event::LinkLost
+        // The driver asked for these ends.
+        Event::SessionEnded(SessionEnd::StopRequested | SessionEnd::Closed) => log::Level::Info,
+        Event::SessionEnded(_)
         | Event::LateReply { .. }
         | Event::ParseError
         | Event::SentypeMismatch
@@ -485,14 +542,14 @@ fn level_of(e: &Event) -> log::Level {
 /// Moves events from the real-time thread's queue into the history, logging them rate-limited.
 /// The real-time thread never logs. Runs until `close` has joined the real-time thread, so its
 /// last events are recorded too.
-fn run_monitor(shared: Arc<Shared>, history: Arc<Mutex<VecDeque<Event>>>) {
+fn run_monitor(shared: Arc<Shared>, history: Arc<Mutex<VecDeque<TimedEvent>>>) {
     let mut rl = RateLimiter::new(Duration::from_secs(1));
     loop {
         // Read before draining: every event pushed before `close` set the flag is drained below.
         let last = shared.monitor_stop.load(Ordering::Acquire);
         while let Some(e) = shared.events.pop() {
-            if rl.allow(&e, Instant::now()) {
-                log::log!(target: "kuka_rsi", level_of(&e), "{e:?}");
+            if rl.allow(&e.event, Instant::now()) {
+                log::log!(target: "kuka_rsi", level_of(&e.event), "{:?}", e.event);
             }
             let mut h = history.lock().unwrap_or_else(PoisonError::into_inner);
             if h.len() == EVENT_HISTORY {
@@ -520,9 +577,86 @@ pub struct Driver {
     stats_out: Mutex<triple_buffer::Output<Stats>>,
     log_rx: Mutex<rtrb::Consumer<RobotState>>,
     rt: Mutex<Option<JoinHandle<()>>>,
-    history: Arc<Mutex<VecDeque<Event>>>,
+    history: Arc<Mutex<VecDeque<TimedEvent>>>,
     monitor: Mutex<Option<JoinHandle<()>>>,
     local_addr: SocketAddr,
+}
+
+/// What `move_to` and `stream` queued: the motion that started when the queue was last dropped
+/// (by `move_to`, `hold` or `stream` with `replace`), with everything appended to it since. Give
+/// it to `Wait::motion` to learn whether that motion ended on its own or was cut short.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Motion {
+    session: u64,
+    id: u64,
+}
+
+/// A wait for the robot to stand still at its last target, made by `Driver::wait`: every queued
+/// command applied, the target queue empty and the command settled.
+///
+/// The timeout counts playback time, not wall time. Playback follows the pendant override and
+/// the speed scale and stands still while the robot program is stopped, so a move of 2 s is
+/// given the same room at 10 % override (20 s) and across a released enabling switch. Without a
+/// `pause_timeout` the wait lasts as long as the pause does; `Driver::hold` from another thread
+/// (with `motion`), a lost link or `close` end it.
+#[must_use = "a wait does nothing until `run` or `poll` is called"]
+pub struct Wait<'a> {
+    driver: &'a Driver,
+    timeout: Duration,
+    pause_timeout: Option<Duration>,
+    motion: Option<Motion>,
+    /// `Shared::played_us` when the wait was made.
+    played0: u64,
+    /// Since when every `poll` has found playback standing still.
+    paused_since: Option<Instant>,
+}
+
+impl Wait<'_> {
+    /// Wait for this motion: `Error::Interrupted` if it was held or replaced before it finished
+    /// (now or earlier), `Error::LinkLost` if its session has ended. Without it, the wait is for
+    /// whatever motion is queued, and a hold ends it with `Ok`.
+    pub fn motion(mut self, motion: Motion) -> Self {
+        self.motion = Some(motion);
+        self
+    }
+
+    /// Give up with `Error::Paused` once playback has stood still for this long.
+    pub fn pause_timeout(mut self, limit: Duration) -> Self {
+        self.pause_timeout = Some(limit);
+        self
+    }
+
+    /// Check once, without blocking: `Ok(true)` when the wait is over, `Ok(false)` to ask again
+    /// (a cycle later at the earliest), or the error that ends it.
+    pub fn poll(&mut self) -> Result<bool> {
+        let shared = &self.driver.shared;
+        if self.driver.idle_now(self.motion)? {
+            return Ok(true);
+        }
+        let played = shared.played_us.load(Ordering::Acquire).saturating_sub(self.played0);
+        if u128::from(played) >= self.timeout.as_micros() {
+            return Err(Error::IdleTimeout);
+        }
+        if shared.paused.load(Ordering::Acquire) {
+            let since = *self.paused_since.get_or_insert_with(Instant::now);
+            if let Some(limit) = self.pause_timeout {
+                if since.elapsed() >= limit {
+                    return Err(Error::Paused(limit));
+                }
+            }
+        } else {
+            self.paused_since = None;
+        }
+        Ok(false)
+    }
+
+    /// Block until the wait is over.
+    pub fn run(mut self) -> Result<()> {
+        while !self.poll()? {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        Ok(())
+    }
 }
 
 const _: () = {
@@ -574,6 +708,11 @@ impl Driver {
             events: ArrayQueue::new(EVENT_QUEUE),
             stop: AtomicBool::new(false),
             session: AtomicU8::new(0),
+            session_id: AtomicU64::new(0),
+            session_end: AtomicU8::new(0),
+            motion: AtomicU64::new(0),
+            played_us: AtomicU64::new(0),
+            paused: AtomicBool::new(false),
             queue_len: AtomicU32::new(0),
             pending: AtomicU32::new(0),
             settled: AtomicBool::new(true),
@@ -592,7 +731,9 @@ impl Driver {
             writer: Writer::new(&schema),
             onlysend: schema.onlysend,
             cycle: cfg.cycle,
+            cycle_us: cfg.cycle.as_secs_f64() * 1e6,
             link_timeout: cfg.link_timeout,
+            t_cycle: None,
             ipoc_step: cfg.cycle.as_millis().max(1) as u64,
             map: StateMap::from_schema(&schema),
             session: Session::new(cfg.limits, cfg.cycle, stop_slot),
@@ -623,7 +764,8 @@ impl Driver {
         let shared_rt = shared.clone();
         let handle = std::thread::Builder::new().name("kuka-rsi-rt".into()).spawn(move || {
             let ok = if want_rt { raise_priority() } else { false };
-            let _ = shared_rt.events.push(Event::RtPriority { ok });
+            let t = shared_rt.start.elapsed().as_secs_f64();
+            let _ = shared_rt.events.push(TimedEvent { t, event: Event::RtPriority { ok } });
             run_rt(rt);
         })?;
         let history = Arc::new(Mutex::new(VecDeque::with_capacity(EVENT_HISTORY)));
@@ -681,6 +823,20 @@ impl Driver {
         session_from_u8(self.shared.session.load(Ordering::Acquire))
     }
 
+    /// Why the last session ended: `None` until one has, then kept while the next one runs.
+    /// Read it when `session()` turns `Lost` or a call returns `Error::LinkLost`, to tell an end
+    /// the driver asked for (`stop_program`) from a fault or a robot that went silent.
+    pub fn last_session_end(&self) -> Option<SessionEnd> {
+        end_from_u8(self.shared.session_end.load(Ordering::Acquire))
+    }
+
+    /// Playback stands still in an active session: the robot program is stopped (the enabling
+    /// switch or Start was released), or the pendant override or the speed scale is 0. Queued
+    /// motion continues when it runs again.
+    pub fn is_paused(&self) -> bool {
+        self.shared.paused.load(Ordering::Acquire)
+    }
+
     /// A `fault` has been applied: the command is frozen, and `stream`, `move_to`, `notify` and
     /// `wait_idle` return `Error::Faulted` for the rest of the session. Becomes true with the
     /// first telegram after `fault` (the real-time thread applies it) and false when the session
@@ -711,9 +867,10 @@ impl Driver {
         *self.stats_out.lock().unwrap().read()
     }
 
-    /// Events recorded by the monitor thread since the last call (oldest first). The monitor
-    /// polls every 50 ms and keeps at most `EVENT_HISTORY` events, dropping the oldest.
-    pub fn events(&self) -> Vec<Event> {
+    /// Events recorded by the monitor thread since the last call (oldest first), each with the
+    /// driver time it happened at. The monitor polls every 50 ms and keeps at most
+    /// `EVENT_HISTORY` events, dropping the oldest.
+    pub fn events(&self) -> Vec<TimedEvent> {
         self.history.lock().unwrap_or_else(PoisonError::into_inner).drain(..).collect()
     }
 
@@ -746,36 +903,58 @@ impl Driver {
     }
 
     /// Block until every queued command has been applied, the target queue is empty and the
-    /// command has reached the last target. Returns `Error::Faulted` once the session is faulted:
-    /// the frozen command will not reach any target.
+    /// command has reached the last target: `self.wait(timeout).run()`. `timeout` counts playback
+    /// time (see `Wait`): `Error::IdleTimeout` means playback ran that long and the command still
+    /// had not settled, e.g. a limit holds it short of the target. While the robot program is
+    /// stopped the wait goes on. Returns `Error::Faulted` once the session is faulted: the frozen
+    /// command will not reach any target.
     pub fn wait_idle(&self, timeout: Duration) -> Result<()> {
-        let t0 = Instant::now();
-        loop {
-            if self.shared.stop.load(Ordering::Relaxed) {
-                return Err(Error::Closed);
-            }
-            match self.session() {
-                SessionState::Active => {}
-                SessionState::Lost => return Err(Error::LinkLost(self.cfg.link_timeout)),
-                SessionState::Listening => return Err(Error::Protocol("robot not connected".into())),
-            }
-            // `pending` first: once it reads zero, `queue_len` and `settled` include every applied
-            // command; `settled` after `queue_len` (the reverse of the order `publish` stores them).
-            let idle = self.shared.pending.load(Ordering::Acquire) == 0
-                && self.shared.queue_len.load(Ordering::Acquire) == 0
-                && self.shared.settled.load(Ordering::Acquire);
-            // After `pending`: a fault applied before `pending` read zero is seen here.
-            if self.is_faulted() {
-                return Err(self.faulted_error());
-            }
-            if idle {
-                return Ok(());
-            }
-            if t0.elapsed() >= timeout {
-                return Err(Error::IdleTimeout);
-            }
-            std::thread::sleep(Duration::from_millis(1));
+        self.wait(timeout).run()
+    }
+
+    /// A wait for the robot to stand still at its last target, with `timeout` of playback time.
+    /// Add `Wait::motion` to learn of a hold or a replacing motion, `Wait::pause_timeout` to
+    /// bound a pause, then `run` it or `poll` it from a loop of your own.
+    pub fn wait(&self, timeout: Duration) -> Wait<'_> {
+        Wait {
+            driver: self,
+            timeout,
+            pause_timeout: None,
+            motion: None,
+            played0: self.shared.played_us.load(Ordering::Acquire),
+            paused_since: None,
         }
+    }
+
+    /// Every queued command has been applied, the target queue is empty and the command has
+    /// reached the last target. The errors of `wait_idle` without the timeout: `Error::LinkLost`
+    /// or "robot not connected" outside a session, `Error::Faulted` on a faulted one.
+    pub fn is_idle(&self) -> Result<bool> {
+        self.idle_now(None)
+    }
+
+    /// `is_idle`, and for a `motion`: an error if it is not the one queued now.
+    fn idle_now(&self, motion: Option<Motion>) -> Result<bool> {
+        self.require_session()?;
+        // After `session` read `Active` (`publish` stores them in the reverse order).
+        if motion.is_some_and(|m| m.session != self.shared.session_id.load(Ordering::Acquire)) {
+            return Err(Error::LinkLost(self.cfg.link_timeout));
+        }
+        // `pending` first: once it reads zero, `queue_len` and `settled` include every applied
+        // command; `settled` after `queue_len` (the reverse of the order `publish` stores them).
+        let idle = self.shared.pending.load(Ordering::Acquire) == 0
+            && self.shared.queue_len.load(Ordering::Acquire) == 0
+            && self.shared.settled.load(Ordering::Acquire);
+        // After `pending`: a fault applied before `pending` read zero is seen here.
+        if self.is_faulted() {
+            return Err(self.faulted_error());
+        }
+        // After the idle state: the command that cut the motion short raised the count before
+        // it was queued, so an idle state it caused is never taken for the motion's own end.
+        if motion.is_some_and(|m| m.id != self.shared.motion.load(Ordering::Acquire)) {
+            return Err(Error::Interrupted);
+        }
+        Ok(idle)
     }
 
     /// The driver is open and a session is active (faulted or not).
@@ -829,7 +1008,10 @@ impl Driver {
     /// (a `replace` call, `hold`, `move_to`), the room check may count the dropped points for up to
     /// one cycle, so a call immediately following it can be refused with `QueueFull` although it
     /// would fit; retrying after a cycle succeeds.
-    pub fn stream(&self, points: &[[f64; 6]], dt: Duration, replace: bool) -> Result<()> {
+    ///
+    /// Returns the motion the points belong to: a new one with `replace`, else the one they
+    /// were appended to.
+    pub fn stream(&self, points: &[[f64; 6]], dt: Duration, replace: bool) -> Result<Motion> {
         self.require_active()?;
         let cycles = cycles_for(dt, self.cfg.cycle, "dt")?;
         if points.len() > MAX_QUEUE {
@@ -857,6 +1039,11 @@ impl Driver {
             return Err(Error::QueueFull);
         }
         self.shared.in_flight.fetch_add(points.len(), Ordering::AcqRel);
+        // With `replace` a new motion, counted before its first chunk is pushed (`start_motion`).
+        let id = match replace {
+            true => self.shared.motion.fetch_add(1, Ordering::AcqRel) + 1,
+            false => self.shared.motion.load(Ordering::Acquire),
+        };
         let mut sent = 0;
         for (i, chunk) in points.chunks(MAX_CHUNK).enumerate() {
             let mut arr: ArrayVec<[f64; 6], MAX_CHUNK> = ArrayVec::new();
@@ -873,30 +1060,50 @@ impl Driver {
                 // Another caller filled the command queue or the driver closed: the points not
                 // pushed never reach the real-time thread.
                 self.shared.in_flight.fetch_sub(points.len() - sent, Ordering::AcqRel);
+                if replace && sent == 0 {
+                    self.shared.motion.fetch_sub(1, Ordering::AcqRel);
+                }
                 return Err(e);
             }
             sent += chunk.len();
         }
         drop(limits);
-        Ok(())
+        Ok(Motion { session: self.shared.session_id.load(Ordering::Acquire), id })
     }
 
-    /// Smooth (quintic) move from the current command to `q` (rad) over `duration`.
-    pub fn move_to(&self, q: [f64; 6], duration: Duration) -> Result<()> {
+    /// Queue a command that drops what was queued, as a new motion. The caller holds the
+    /// `motion` lock.
+    fn start_motion(&self, cmd: Command) -> Result<Motion> {
+        // Counted before the push: a wait for the motion this one cuts short reads the new count
+        // no later than the idle state the command leads to.
+        let id = self.shared.motion.fetch_add(1, Ordering::AcqRel) + 1;
+        if let Err(e) = self.send(cmd) {
+            // Nothing was queued. No `Motion` carries the count taken back: handing one out
+            // needs the lock. A wait that read it meanwhile reports `Interrupted`.
+            self.shared.motion.fetch_sub(1, Ordering::AcqRel);
+            return Err(e);
+        }
+        Ok(Motion { session: self.shared.session_id.load(Ordering::Acquire), id })
+    }
+
+    /// Smooth (quintic) move from the current command to `q` (rad) over `duration`. Drops what
+    /// was queued; returns the new motion.
+    pub fn move_to(&self, q: [f64; 6], duration: Duration) -> Result<Motion> {
         self.require_active()?;
         let cycles = cycles_for(duration, self.cfg.cycle, "duration")?;
         // Held across the push: the move never lands between the chunks of a `stream` call.
         let limits = self.motion.lock().unwrap();
         limits.check_position(&q)?;
-        self.send(Command::MoveTo { q, cycles })
+        self.start_motion(Command::MoveTo { q, cycles })
     }
 
-    /// Drop the queue and hold the current command.
+    /// Drop the queue and hold the current command. A `Wait` for the motion that was queued ends
+    /// with `Error::Interrupted`.
     pub fn hold(&self) -> Result<()> {
         // Held across the push: the hold never lands between the chunks of a `stream` call, whose
         // later chunks would then play from the hold point. A poisoned lock must not prevent a hold.
         let _motion = self.motion.lock().unwrap_or_else(PoisonError::into_inner);
-        self.send(Command::Hold)
+        self.start_motion(Command::Hold).map(|_| ())
     }
 
     /// Stop the robot through `EStr` and freeze the command until the next session. Allowed on
@@ -1001,7 +1208,7 @@ mod tests {
 
     #[test]
     fn event_level_split() {
-        assert_eq!(level_of(&Event::LinkLost), log::Level::Warn);
+        assert_eq!(level_of(&Event::SessionEnded(SessionEnd::LinkTimeout)), log::Level::Warn);
         assert_eq!(level_of(&Event::RobotConnected { ipoc: 1 }), log::Level::Info);
         assert_eq!(level_of(&Event::RtPriority { ok: false }), log::Level::Warn);
         assert_eq!(level_of(&Event::RtPriority { ok: true }), log::Level::Info);

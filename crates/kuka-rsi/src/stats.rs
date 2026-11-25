@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::state::SessionEnd;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Stats {
     pub sessions: u64,
@@ -35,6 +37,15 @@ pub struct Stats {
     pub robot_delay: u32,
 }
 
+/// An event and when it happened.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TimedEvent {
+    /// Seconds since the driver started, on the clock of `RobotState::t`. An event raised while
+    /// a telegram was handled has that cycle's `t`, so it lines up with its `drain_log` row.
+    pub t: f64,
+    pub event: Event,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClampKind {
     Position,
@@ -50,7 +61,8 @@ pub enum Event {
     RobotConnected {
         ipoc: u64,
     },
-    LinkLost,
+    /// The session is over (`SessionState::Lost`), with the reason as far as the driver knows it.
+    SessionEnded(SessionEnd),
     LateReply {
         latency_us: u64,
     },
@@ -97,7 +109,7 @@ mod tests {
             Event::TrackingError { error_rad: 0.05 },
             Event::RtPriority { ok: false },
             Event::Clamped(ClampKind::Velocity),
-            Event::LinkLost,
+            Event::SessionEnded(SessionEnd::StopRequested),
         ] {
             let json = serde_json::to_string(&e).unwrap();
             let back: Event = serde_json::from_str(&json).unwrap();

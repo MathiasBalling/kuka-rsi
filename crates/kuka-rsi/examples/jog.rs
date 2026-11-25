@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use kuka_rsi::Error;
 use kuka_rsi::config::{DriverConfig, EthernetConfig, Limits};
-use kuka_rsi::driver::Driver;
+use kuka_rsi::driver::{Driver, Motion};
 use kuka_rsi::record::CsvLog;
 use kuka_rsi::state::RobotState;
 use kuka_rsi::stats::Stats;
@@ -140,14 +140,22 @@ fn drain(drv: &Driver, leg: &mut Vec<RobotState>, csv: &mut Option<CsvLog>) -> R
     Ok(())
 }
 
-/// Wait for the move to finish, draining the log meanwhile, then let the robot settle.
-fn follow(drv: &Driver, timeout: Duration, leg: &mut Vec<RobotState>, csv: &mut Option<CsvLog>) -> Result<(), Error> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        match drv.wait_idle(Duration::from_millis(100)) {
-            Ok(()) => break,
-            Err(Error::IdleTimeout) if Instant::now() < deadline => drain(drv, leg, csv)?,
-            Err(e) => return Err(e),
+/// Wait for the move to finish, draining the log meanwhile, then let the robot settle. `timeout`
+/// is playback time: the wait goes on while the program is stopped, and the log with it.
+fn follow(
+    drv: &Driver,
+    motion: Motion,
+    timeout: Duration,
+    leg: &mut Vec<RobotState>,
+    csv: &mut Option<CsvLog>,
+) -> Result<(), Error> {
+    let mut wait = drv.wait(timeout).motion(motion);
+    let mut drained = Instant::now();
+    while !wait.poll()? {
+        std::thread::sleep(Duration::from_millis(2));
+        if drained.elapsed() >= Duration::from_millis(100) {
+            drain(drv, leg, csv)?;
+            drained = Instant::now();
         }
     }
     std::thread::sleep(Duration::from_millis(300));
@@ -234,16 +242,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let start: Vec<String> =
         moving.iter().map(|&i| format!("A{} {:.3}", i + 1, drv.state().q[i].to_degrees())).collect();
     println!("start (deg): {}", start.join("  "));
-    // Playback follows the pendant override (10 % stretches 2 s to 20 s), so wait generously.
-    let wait = Duration::from_secs_f64(plan.secs * 10.0 + 30.0);
+    // Playback time, so the pendant override (10 % stretches 2 s to 20 s) does not use it up; the
+    // headroom is for a move the limiter stretches.
+    let wait = Duration::from_secs_f64(plan.secs + 30.0);
     let mut leg = Vec::new();
     drain(&drv, &mut leg, &mut csv)?;
     for round in 1..=plan.repeat {
         for (name, target) in [("out", q1), ("back", q0)] {
             leg.clear();
             let before = drv.stats();
-            drv.move_to(target, Duration::from_secs_f64(plan.secs))?;
-            follow(&drv, wait, &mut leg, &mut csv)?;
+            let motion = drv.move_to(target, Duration::from_secs_f64(plan.secs))?;
+            follow(&drv, motion, wait, &mut leg, &mut csv)?;
             report(&format!("{round}/{} {name}", plan.repeat), &target, &moving, &leg, &before, &drv);
         }
     }

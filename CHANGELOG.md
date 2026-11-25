@@ -43,6 +43,19 @@ real robot.
   `Faulted` in Python), and the doctor's timing check names the robot's cycle. The controller
   files include `kuka_rsi_12ms.src`, the same program in that mode. The 12 ms mode is not
   yet confirmed on a robot.
+- For applications that keep one driver open across several robot steps: the timeout of
+  `wait_idle` and `move_to(block=True)` counts playback time, so a low override or a
+  stopped program (a released enabling switch) no longer times a move out; `is_paused`,
+  and an optional pause limit (`Error::Paused`, `Paused` in Python). `move_to` and `stream`
+  return a `Motion`, and a wait for it reports a `hold` or a replacing motion
+  (`Error::Interrupted`, `Interrupted`). `Driver::wait` builds such a wait (`Wait::motion`,
+  `Wait::pause_timeout`, `run`, or `poll` from a loop of your own); `is_idle` is the same
+  check without blocking. A session's end carries its reason (`Driver::last_session_end`,
+  `Event::SessionEnded`): a requested stop, a fault, a robot gone silent, a close. Events
+  carry the driver time of their cycle (`TimedEvent`); in Python `events()` returns dicts
+  with `kind`, `t` and the fields of the kind, and blocking waits react to Ctrl-C. The
+  simulator can stop and start its program and change its override during a run
+  (`SimHandle::set_program_running`, `set_override_percent`).
 - Python bindings (`kuka_rsi`, one abi3 wheel per platform for CPython 3.10+, numpy
   1.24+) with type stubs.
 - Controller files for KR C5 / KSS 8.7: RSI contexts, Ethernet configs and KRL programs,

@@ -252,7 +252,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let back_secs = (1.875 * plan.amp_deg / plan.speed_deg_s).max(2.0);
     drv.move_to(q0, Duration::from_secs_f64(back_secs))?;
-    drv.wait_idle(Duration::from_secs_f64(back_secs * 10.0 + 30.0))?;
+    // The timeout counts playback time: a low override or a stopped program does not use it up.
+    drv.wait_idle(Duration::from_secs_f64(back_secs + 30.0))?;
     drain(&drv, &mut log, &mut csv)?;
     let q = drv.state().q;
     let err = plan.axes.iter().map(|&i| (q[i] - q0[i]).to_degrees().abs()).fold(0.0, f64::max);

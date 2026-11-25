@@ -9,13 +9,16 @@ from kuka_rsi._core import (
     Driver,
     Error,
     Faulted,
+    Interrupted,
     LimitError,
     Limits,
     LinkLost,
+    Motion,
+    Paused,
     ProtocolError,
     RobotState,
     Stats,
     check_setup,
 )
 
-__all__ = ["CSV_HEADER", "ControllerSim", "Driver", "Error", "Faulted", "LimitError", "Limits", "LinkLost", "ProtocolError", "RobotState", "Stats", "check_setup"]
+__all__ = ["CSV_HEADER", "ControllerSim", "Driver", "Error", "Faulted", "Interrupted", "LimitError", "Limits", "LinkLost", "Motion", "Paused", "ProtocolError", "RobotState", "Stats", "check_setup"]

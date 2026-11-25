@@ -2,6 +2,7 @@ import pathlib
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 
 import numpy as np
@@ -102,9 +103,6 @@ def test_log_stats_and_events():
     assert st.log_drops == 0
     assert st.cycles > 0 and st.sessions == 1
     assert "replies" in st.as_dict()
-    time.sleep(0.15)
-    ev = drv.events()
-    assert any("RobotConnected" in e for e in ev), ev
     drv.close()
 
 
@@ -257,3 +255,134 @@ def test_limits_are_the_live_value():
     drv.set_limits(kuka_rsi.Limits.kr10_defaults(max_velocity=0.5))
     assert np.allclose(drv.limits().max_velocity, 0.5)
     drv.close()
+
+
+def wait_for(pred, timeout=2.0):
+    t0 = time.monotonic()
+    while not pred() and time.monotonic() - t0 < timeout:
+        time.sleep(0.005)
+    return pred()
+
+
+def test_events_are_dicts_with_kind_time_and_fields():
+    drv, _sim = make()
+    time.sleep(0.15)
+    ev = drv.events()
+    connected = next(e for e in ev if e["kind"] == "RobotConnected")
+    assert isinstance(connected["ipoc"], int)
+    assert connected["t"] == drv.drain_log()[0].t  # the session's first cycle
+    priority = next(e for e in ev if e["kind"] == "RtPriority")
+    assert priority["ok"] is False and set(priority) == {"kind", "t", "ok"}
+    assert all(a["t"] <= b["t"] for a, b in zip(ev, ev[1:]))
+    drv.close()
+
+
+def test_a_requested_stop_is_the_session_end_reason():
+    drv, sim = make()
+    assert drv.last_session_end() is None
+    drv.stop_program()
+    assert sim.wait_exit(2.0) == "Stopped"
+    assert wait_for(lambda: drv.session() == "Lost")
+    assert drv.last_session_end() == "StopRequested"
+    time.sleep(0.15)
+    assert [e["reason"] for e in drv.events() if e["kind"] == "SessionEnded"] == ["StopRequested"]
+    drv.close()
+
+
+def test_motion_and_is_idle():
+    drv, _sim = make()
+    assert drv.is_idle()
+    q = drv.state().q.copy()
+    q[5] += 0.03
+    motion = drv.move_to(q, duration=0.3)
+    assert isinstance(motion, kuka_rsi.Motion)
+    assert not drv.is_idle()
+    drv.wait_idle(5.0, motion=motion)
+    assert drv.is_idle()
+    appended = drv.stream(q, dt=0.1)
+    assert appended == motion, "appended points belong to the motion they extend"
+    assert drv.stream(q, dt=0.1, replace=True) != motion
+    drv.close()
+
+
+def test_a_wait_outlasts_a_stopped_program():
+    drv, sim = make()
+    sim.set_program_running(False)
+    assert wait_for(drv.is_paused)
+    q = drv.state().q.copy()
+    q[5] += 0.03
+    motion = drv.move_to(q, duration=0.2)
+    resume = threading.Timer(0.9, sim.set_program_running, [True])
+    resume.start()
+    t0 = time.monotonic()
+    drv.wait_idle(0.6, motion=motion)  # 0.6 s of playback; the program is stopped for longer
+    assert time.monotonic() - t0 >= 0.9
+    assert np.isclose(drv.state().q_command[5], q[5])
+    assert not drv.is_paused()
+    resume.join()
+    drv.close()
+
+
+def test_a_long_pause_raises_paused():
+    drv, sim = make()
+    sim.set_program_running(False)
+    assert wait_for(drv.is_paused)
+    q = drv.state().q.copy()
+    q[5] += 0.03
+    with pytest.raises(kuka_rsi.Paused):
+        drv.move_to(q, duration=0.2, block=True, pause_timeout=0.3)
+    with pytest.raises(TimeoutError):  # as before, for callers that do not tell them apart
+        drv.wait_idle(5.0, pause_timeout=0.1)
+    assert issubclass(kuka_rsi.Paused, TimeoutError)
+    drv.close()
+
+
+def test_hold_interrupts_a_blocking_move():
+    drv, _sim = make()
+    q = drv.state().q.copy()
+    q[5] += 0.05
+    stop = threading.Timer(0.1, drv.hold)
+    stop.start()
+    with pytest.raises(kuka_rsi.Interrupted):
+        drv.move_to(q, duration=2.0, block=True)
+    stop.join()
+    drv.wait_idle(5.0)
+    assert drv.state().q_command[5] < q[5] - 0.01
+    assert issubclass(kuka_rsi.Interrupted, kuka_rsi.Error)
+    drv.close()
+
+
+def test_ctrl_c_ends_a_blocking_wait_on_a_stopped_program():
+    # In a subprocess, so that a wait that ignores the signal cannot hang pytest.
+    code = textwrap.dedent(
+        f"""
+        import os, signal, threading, time
+        import kuka_rsi
+
+        # A parent that ignores SIGINT (a background job) hands that down; Ctrl-C at a terminal does not.
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+        drv = kuka_rsi.Driver({str(CONFIG)!r}, bind="127.0.0.1:0", stop_channel="MoveStop", rt_priority=False)
+        sim = kuka_rsi.ControllerSim({str(CONFIG)!r}, target=drv.local_addr(), bind="127.0.0.1:0")
+        drv.wait_for_robot(3.0)
+        sim.set_program_running(False)
+        while not drv.is_paused():
+            time.sleep(0.01)
+        q = drv.state().q
+        q[5] += 0.03
+        threading.Timer(0.3, os.kill, [os.getpid(), signal.SIGINT]).start()
+        t0 = time.monotonic()
+        try:
+            drv.move_to(q, duration=0.2, block=True)
+            print("returned")
+        except KeyboardInterrupt:
+            print("interrupted" if time.monotonic() - t0 < 5.0 else "interrupted late")
+        drv.close()
+        sim.stop()
+        """
+    )
+    try:
+        proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=15)
+    except subprocess.TimeoutExpired:
+        pytest.fail("Ctrl-C did not end a blocking move on a stopped program within 15 s")
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "interrupted", proc.stdout

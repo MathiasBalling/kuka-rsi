@@ -12,6 +12,12 @@ pub enum Error {
     RobotTimeout,
     #[error("timeout waiting for the queue to drain")]
     IdleTimeout,
+    #[error(
+        "playback paused for longer than {0:?}: the robot program is stopped, or the override or the speed scale is 0"
+    )]
+    Paused(Duration),
+    #[error("the motion was held or replaced before it finished")]
+    Interrupted,
     #[error("link lost: no telegram for {0:?}")]
     LinkLost(Duration),
     #[error("protocol: {0}")]

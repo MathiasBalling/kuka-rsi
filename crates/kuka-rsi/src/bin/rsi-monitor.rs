@@ -106,7 +106,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if last_stats.elapsed() >= Duration::from_secs(1) {
             println!("{:?}", drv.stats());
             for e in drv.events() {
-                println!("event: {e:?}");
+                println!("event: t={:.3} {:?}", e.t, e.event);
             }
             last_stats = Instant::now();
         }

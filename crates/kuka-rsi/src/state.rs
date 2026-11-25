@@ -29,6 +29,24 @@ pub enum SessionState {
     Lost,
 }
 
+/// Why a session ended. The driver only sees the telegrams stop, so the reason is what it knows
+/// about the session at that moment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SessionEnd {
+    /// The driver pulsed the stop channel (`stop_program`, `close`) and the telegrams stopped
+    /// soon after.
+    StopRequested,
+    /// The session was faulted (`fault`, or a cycle mismatch) when the telegrams stopped.
+    Fault,
+    /// The telegrams stopped for longer than `link_timeout` and the driver had not asked for it:
+    /// the program ended, was reset or stopped with an error on the robot, or the link dropped.
+    LinkTimeout,
+    /// The driver was closed while the robot was still sending.
+    Closed,
+    /// The real-time thread panicked.
+    Panic,
+}
+
 /// Snapshot published after every cycle.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct RobotState {

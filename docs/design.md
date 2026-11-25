@@ -509,6 +509,27 @@ approved text is left as written; where the two disagree, this section wins.
   sending the last correction and rejects `stream`, `move_to`, `hold` and `notify` with
   `Error::Faulted` until the KRL program restarts the session. `Driver::is_faulted` and
   `wait_idle` expose it. `speed_scale` survives a session restart.
+- **§5.6, waits (2026-11-25).** `wait_idle` counts its timeout in playback time (the sum
+  of the per-cycle playback rate times the cycle), not wall time, so the override and a
+  stopped program do not use it up; `IdleTimeout` is left for a command that cannot
+  settle. `Driver::wait(timeout)` builds the wait: `motion(m)` ties it to the `Motion`
+  that `move_to` and `stream` return (`Error::Interrupted` after a `hold` or a replacing
+  motion, `Error::LinkLost` once its session is over), `pause_timeout(d)` bounds a pause
+  (`Error::Paused`), `run` blocks and `poll` checks once. A motion is a count kept on the
+  caller's side under the motion lock, raised before the command that drops the queue is
+  pushed; the real-time thread does not know it. `is_idle` and `is_paused` are the
+  non-blocking reads.
+- **§5.6 and §8, session end and events (2026-11-25).** `Event::LinkLost` became
+  `Event::SessionEnded(SessionEnd)`: `StopRequested` (a stop pulse at most
+  `STOP_GRACE_CYCLES` before the telegrams stopped), `Fault`, `LinkTimeout`, `Closed`
+  (the driver closed an active session; this had no event before), `Panic`.
+  `Driver::last_session_end` keeps the last one. `events()` returns `TimedEvent`s: the
+  real-time thread stamps each with the arrival time of the telegram it handles, the `t`
+  of that cycle's log row, or with the current time outside a cycle.
+- **§5.8, Python.** `Paused(TimeoutError)` and `Interrupted(Error)` map the two new
+  errors, `Motion` is an opaque class, and `events()` returns one dict per event (`kind`,
+  `t`, the kind's fields) instead of debug strings. Blocking waits take the GIL back
+  every 50 ms to check for signals.
 - **§5.8, Python.** A `Faulted(Error)` exception maps `Error::Faulted`. Negative or
   non-finite durations raise `ValueError`. After `close()` every `Driver` method raises
   `Error("driver is closed")`; keeping the read accessors usable after close, as in

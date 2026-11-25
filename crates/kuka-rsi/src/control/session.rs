@@ -6,13 +6,16 @@ use arrayvec::{ArrayString, ArrayVec};
 
 use super::{Blend, ClampCounts, Command, Interpolator, Limiter, MAX_QUEUE, Segment};
 use crate::config::Limits;
-use crate::state::{RobotState, SessionState, deg2rad6, rad2deg6};
+use crate::state::{RobotState, SessionEnd, SessionState, deg2rad6, rad2deg6};
 use crate::stats::{ClampKind, Event};
 use crate::telegram::{RobotTelegram, SensorTelegram};
 use crate::{Error, Result};
 
 /// Cycles a message or stop pulse is repeated for.
 pub const MESSAGE_CYCLES: u32 = 25;
+/// Cycles after a stop request within which the end of the session counts as requested: the
+/// pulse and as long again. A robot that still sends after that did not stop on the pulse.
+pub const STOP_GRACE_CYCLES: u32 = 2 * MESSAGE_CYCLES;
 
 pub struct Session {
     state: SessionState,
@@ -25,8 +28,14 @@ pub struct Session {
     estr_cycles: u32,
     stop_slot: Option<usize>,
     stop_cycles: u32,
+    /// Cycles left of `STOP_GRACE_CYCLES` since the last stop request.
+    stop_grace: u32,
     frozen: Option<[f64; 6]>,
     cycles: u64,
+    /// Cycles of playback since the driver started: every cycle adds its playback rate.
+    played: f64,
+    /// The last cycle's playback rate was 0.
+    paused: bool,
     last_command: [f64; 6],
     tracking_alarm: bool,
     starved_alarm: bool,
@@ -57,8 +66,11 @@ impl Session {
             estr_cycles: 0,
             stop_slot,
             stop_cycles: 0,
+            stop_grace: 0,
             frozen: None,
             cycles: 0,
+            played: 0.0,
+            paused: false,
             last_command: [0.0; 6],
             tracking_alarm: false,
             starved_alarm: false,
@@ -110,6 +122,30 @@ impl Session {
         }
     }
 
+    /// Playback time in cycles since the driver started. A cycle adds its playback rate: 1 at
+    /// full speed, the pendant override times the speed scale otherwise, 0 while the program is
+    /// stopped. A move of `n` cycles is played once this has advanced by `n`.
+    pub fn played(&self) -> f64 {
+        self.played
+    }
+
+    /// Playback stands still: in the last cycle the program was stopped, or the override or the
+    /// speed scale was 0. False from the start of a session until its first cycle.
+    pub fn is_paused(&self) -> bool {
+        self.paused
+    }
+
+    /// Why the session would have ended if the telegrams stopped now.
+    pub fn end_reason(&self) -> SessionEnd {
+        if self.frozen.is_some() {
+            SessionEnd::Fault
+        } else if self.stop_grace > 0 {
+            SessionEnd::StopRequested
+        } else {
+            SessionEnd::LinkTimeout
+        }
+    }
+
     pub fn starved(&self) -> u64 {
         self.interp.starved()
     }
@@ -138,7 +174,9 @@ impl Session {
         self.estr.clear();
         self.estr_cycles = 0;
         self.stop_cycles = 0;
+        self.stop_grace = 0;
         self.cycles = 0;
+        self.paused = false;
         self.last_command = q_actual;
         self.tracking_alarm = false;
         self.starved_alarm = false;
@@ -148,12 +186,12 @@ impl Session {
         self.event(Event::RobotConnected { ipoc: tele.ipoc });
     }
 
-    /// The link went silent: drop the queue and wait for a new session.
-    pub fn lost(&mut self) {
+    /// The session is over: drop the queue and wait for a new session.
+    pub fn lost(&mut self, reason: SessionEnd) {
         self.state = SessionState::Lost;
         self.interp.reset(self.limiter.last().unwrap_or(self.q_start));
         self.frozen = None;
-        self.event(Event::LinkLost);
+        self.event(Event::SessionEnded(reason));
     }
 
     pub fn apply(&mut self, cmd: Command) -> Result<()> {
@@ -218,6 +256,7 @@ impl Session {
                     return Err(Error::Config("no stop channel configured (DriverConfig::stop_channel)".into()));
                 }
                 self.stop_cycles = MESSAGE_CYCLES;
+                self.stop_grace = STOP_GRACE_CYCLES;
                 self.event(Event::StopPulsed);
                 Ok(())
             }
@@ -271,6 +310,9 @@ impl Session {
     pub fn step(&mut self, tele: &RobotTelegram, state: &RobotState, out: &mut SensorTelegram) -> [f64; 6] {
         self.cycles += 1;
         let rate = if state.program_running { self.speed_scale * state.speed_override } else { 0.0 };
+        self.played += rate;
+        self.paused = rate <= 0.0;
+        self.stop_grace = self.stop_grace.saturating_sub(1);
         let starved_before = self.interp.starved();
         let target = self.interp.step(rate);
         if self.interp.starved() > starved_before {
@@ -352,7 +394,7 @@ mod tests {
     use super::*;
     use crate::config::Limits;
     use crate::control::{MAX_CHUNK, MAX_QUEUE};
-    use crate::state::{RobotState, deg2rad6};
+    use crate::state::{RobotState, SessionEnd, deg2rad6};
     use crate::telegram::{RobotTelegram, SensorTelegram};
     use arrayvec::{ArrayString, ArrayVec};
     use std::time::Duration;
@@ -596,9 +638,9 @@ mod tests {
         q[0] += 0.02;
         s.apply(stream(q, 10.0, false)).unwrap();
         run(&mut s, &t, 3);
-        s.lost();
+        s.lost(SessionEnd::LinkTimeout);
         assert_eq!(s.state(), SessionState::Lost);
-        assert!(s.take_events().contains(&Event::LinkLost));
+        assert!(s.take_events().contains(&Event::SessionEnded(SessionEnd::LinkTimeout)));
         let mut new_start = START_DEG;
         new_start[1] = -80.0;
         let t2 = tele(new_start, new_start, 5000);
@@ -608,6 +650,75 @@ mod tests {
         let out = run(&mut s, &t2, 1);
         assert!(out.ak.iter().all(|a| a.abs() < 1e-9));
         assert_eq!(out.ipoc, 5000);
+    }
+
+    #[test]
+    fn playback_time_counts_the_cycles_played() {
+        let (mut s, t) = started();
+        let mut st = state(&t);
+        let mut out = SensorTelegram::default();
+        assert!(!s.is_paused(), "a new session is not paused before its first telegram says so");
+        st.speed_override = 0.5;
+        for _ in 0..10 {
+            s.step(&t, &st, &mut out);
+        }
+        assert!((s.played() - 5.0).abs() < 1e-12, "10 cycles at half speed: {}", s.played());
+        assert!(!s.is_paused());
+        st.program_running = false;
+        for _ in 0..10 {
+            s.step(&t, &st, &mut out);
+        }
+        assert!((s.played() - 5.0).abs() < 1e-12, "a stopped program plays nothing: {}", s.played());
+        assert!(s.is_paused());
+        st.program_running = true;
+        st.speed_override = 0.0;
+        s.step(&t, &st, &mut out);
+        assert!(s.is_paused(), "override 0 is a pause too");
+        st.speed_override = 1.0;
+        s.step(&t, &st, &mut out);
+        assert!((s.played() - 6.0).abs() < 1e-12);
+        assert!(!s.is_paused());
+        s.apply(Command::SetSpeedScale(0.0)).unwrap();
+        s.step(&t, &st, &mut out);
+        assert!(s.is_paused(), "speed scale 0 is a pause too");
+    }
+
+    #[test]
+    fn end_reason_is_a_timeout_unless_the_driver_caused_it() {
+        let (s, _) = started();
+        assert_eq!(s.end_reason(), SessionEnd::LinkTimeout);
+    }
+
+    #[test]
+    fn end_reason_after_a_stop_pulse_is_stop_requested_for_a_while() {
+        let (mut s, t) = started();
+        s.apply(Command::StopProgram).unwrap();
+        assert_eq!(s.end_reason(), SessionEnd::StopRequested);
+        run(&mut s, &t, STOP_GRACE_CYCLES as usize - 1);
+        assert_eq!(s.end_reason(), SessionEnd::StopRequested);
+        // The robot still sends well after the pulse: it did not stop on it, so a silence that
+        // follows later has another cause.
+        run(&mut s, &t, 1);
+        assert_eq!(s.end_reason(), SessionEnd::LinkTimeout);
+    }
+
+    #[test]
+    fn end_reason_of_a_faulted_session_is_the_fault() {
+        let (mut s, _) = started();
+        s.apply(Command::Fault(ArrayString::from("bad").unwrap())).unwrap();
+        assert_eq!(s.end_reason(), SessionEnd::Fault);
+        s.apply(Command::StopProgram).unwrap();
+        assert_eq!(s.end_reason(), SessionEnd::Fault, "the stop that ends a faulted session does not hide the fault");
+    }
+
+    #[test]
+    fn a_new_session_forgets_the_stop_request() {
+        let (mut s, t) = started();
+        s.apply(Command::StopProgram).unwrap();
+        s.lost(s.end_reason());
+        assert!(s.take_events().contains(&Event::SessionEnded(SessionEnd::StopRequested)));
+        s.start(&t);
+        assert_eq!(s.end_reason(), SessionEnd::LinkTimeout);
     }
 
     #[test]
@@ -754,7 +865,7 @@ mod tests {
         let mut s = filled_to(1000);
         let q = s.q_start();
         assert!(matches!(s.apply(chunk(q, 40, 30)), Err(Error::QueueFull)));
-        s.lost();
+        s.lost(SessionEnd::LinkTimeout);
         s.start(&tele(START_DEG, START_DEG, 2000));
         // A later chunk, so only the session reset (not the `first` flag) can clear the rejection.
         s.apply(rest(q, 30, 0)).unwrap();
@@ -781,7 +892,7 @@ mod tests {
         assert!(s.is_faulted());
         run(&mut s, &t, 30);
         assert!(s.is_faulted(), "the fault outlives its message");
-        s.lost();
+        s.lost(SessionEnd::LinkTimeout);
         s.start(&tele(START_DEG, START_DEG, 2000));
         assert!(!s.is_faulted());
     }

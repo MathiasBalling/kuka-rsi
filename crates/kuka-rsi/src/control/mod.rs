@@ -8,4 +8,4 @@ pub mod session;
 pub use command::{Command, MAX_CHUNK};
 pub use interpolator::{Blend, Interpolator, MAX_QUEUE, Segment};
 pub use limiter::{ClampCounts, Limiter};
-pub use session::{MESSAGE_CYCLES, Session};
+pub use session::{MESSAGE_CYCLES, STOP_GRACE_CYCLES, Session};

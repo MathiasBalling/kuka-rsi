@@ -10,10 +10,10 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use kuka_rsi::config::{DriverConfig, EthernetConfig, Limits};
-use kuka_rsi::driver::Driver;
+use kuka_rsi::driver::{Driver, Motion, Wait};
 use kuka_rsi::sim::{ControllerSim, SimConfig, SimExit, SimHandle, SimStatus};
-use kuka_rsi::state::{RobotState, SessionState};
-use kuka_rsi::stats::Stats;
+use kuka_rsi::state::{RobotState, SessionEnd, SessionState};
+use kuka_rsi::stats::{ClampKind, Event, Stats, TimedEvent};
 
 create_exception!(kuka_rsi, Error, PyException, "Base class for kuka_rsi errors.");
 create_exception!(kuka_rsi, LinkLost, Error, "No telegram from the robot for longer than link_timeout.");
@@ -26,10 +26,20 @@ create_exception!(
     "A fault() or a cycle mismatch froze the command: stream, move_to, notify and wait_idle are refused until the KRL program restarts (a new session)."
 );
 
+create_exception!(
+    kuka_rsi,
+    Paused,
+    PyTimeoutError,
+    "Playback stood still for longer than pause_timeout: the robot program is stopped, or the override or the speed scale is 0. The motion is still queued."
+);
+create_exception!(kuka_rsi, Interrupted, Error, "The motion waited for was held or replaced before it finished.");
+
 pub(crate) fn to_py(e: kuka_rsi::Error) -> PyErr {
     use kuka_rsi::Error as E;
     match e {
         E::RobotTimeout | E::IdleTimeout => PyTimeoutError::new_err(e.to_string()),
+        E::Paused(_) => Paused::new_err(e.to_string()),
+        E::Interrupted => Interrupted::new_err(e.to_string()),
         E::LinkLost(_) => LinkLost::new_err(e.to_string()),
         E::Protocol(_) => ProtocolError::new_err(e.to_string()),
         E::Limit(_) | E::QueueFull => LimitError::new_err(e.to_string()),
@@ -257,6 +267,21 @@ impl PyControllerSim {
         Ok(py.detach(|| h.wait_exit(timeout)).map(exit_name))
     }
 
+    /// Report the program as running or stopped (`ProgStatus`) from the next telegram on: what
+    /// releasing the enabling switch or the Start key does. No effect once the simulator stopped.
+    fn set_program_running(&self, running: bool) {
+        if let Some(h) = &self.handle {
+            h.set_program_running(running);
+        }
+    }
+
+    /// The pendant override (`OvPro`, 0 to 100) from the next telegram on.
+    fn set_override_percent(&self, percent: f64) {
+        if let Some(h) = &self.handle {
+            h.set_override_percent(percent);
+        }
+    }
+
     fn stop(&mut self, py: Python<'_>) -> PyResult<String> {
         if let Some(msg) = &self.stop_error {
             return Err(Error::new_err(msg.clone()));
@@ -295,6 +320,115 @@ fn session_name(s: SessionState) -> &'static str {
         SessionState::Listening => "Listening",
         SessionState::Active => "Active",
         SessionState::Lost => "Lost",
+    }
+}
+
+fn end_name(e: SessionEnd) -> &'static str {
+    match e {
+        SessionEnd::StopRequested => "StopRequested",
+        SessionEnd::Fault => "Fault",
+        SessionEnd::LinkTimeout => "LinkTimeout",
+        SessionEnd::Closed => "Closed",
+        SessionEnd::Panic => "Panic",
+    }
+}
+
+/// The `kind` of an event's dict. Spelled out, so the names stay when a variant's fields change.
+fn event_kind(e: &Event) -> &'static str {
+    match e {
+        Event::Listening => "Listening",
+        Event::RobotConnected { .. } => "RobotConnected",
+        Event::SessionEnded(_) => "SessionEnded",
+        Event::LateReply { .. } => "LateReply",
+        Event::ParseError => "ParseError",
+        Event::IoError => "IoError",
+        Event::SentypeMismatch => "SentypeMismatch",
+        Event::Clamped(_) => "Clamped",
+        Event::Starved => "Starved",
+        Event::TrackingError { .. } => "TrackingError",
+        Event::CommandRejected => "CommandRejected",
+        Event::Fault => "Fault",
+        Event::CycleMismatch { .. } => "CycleMismatch",
+        Event::Notified => "Notified",
+        Event::StopPulsed => "StopPulsed",
+        Event::RtPriority { .. } => "RtPriority",
+        Event::Panic => "Panic",
+        Event::LogDropped => "LogDropped",
+    }
+}
+
+/// An event as a dict: `kind`, the driver time `t`, then the fields of that kind.
+fn event_dict<'py>(py: Python<'py>, e: &TimedEvent) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("kind", event_kind(&e.event))?;
+    d.set_item("t", e.t)?;
+    match e.event {
+        Event::RobotConnected { ipoc } => d.set_item("ipoc", ipoc)?,
+        Event::SessionEnded(reason) => d.set_item("reason", end_name(reason))?,
+        Event::LateReply { latency_us } => d.set_item("latency_us", latency_us)?,
+        Event::Clamped(kind) => d.set_item(
+            "limit",
+            match kind {
+                ClampKind::Position => "Position",
+                ClampKind::Velocity => "Velocity",
+                ClampKind::Acceleration => "Acceleration",
+                ClampKind::Correction => "Correction",
+            },
+        )?,
+        Event::TrackingError { error_rad } => d.set_item("error_rad", error_rad)?,
+        Event::CycleMismatch { robot_ms, configured_ms } => {
+            d.set_item("robot_ms", robot_ms)?;
+            d.set_item("configured_ms", configured_ms)?;
+        }
+        Event::RtPriority { ok } => d.set_item("ok", ok)?,
+        Event::Listening
+        | Event::ParseError
+        | Event::IoError
+        | Event::SentypeMismatch
+        | Event::Starved
+        | Event::CommandRejected
+        | Event::Fault
+        | Event::Notified
+        | Event::StopPulsed
+        | Event::Panic
+        | Event::LogDropped => {}
+    }
+    Ok(d)
+}
+
+/// What `Driver.move_to` and `Driver.stream` queued; `Driver.wait_idle(motion=...)` waits for it.
+#[pyclass(name = "Motion", module = "kuka_rsi", frozen, eq, skip_from_py_object)]
+#[derive(Clone, PartialEq)]
+pub struct PyMotion {
+    inner: Motion,
+}
+
+#[pymethods]
+impl PyMotion {
+    fn __repr__(&self) -> String {
+        format!("{:?}", self.inner)
+    }
+}
+
+/// Run a wait with the GIL released, taking it back every 50 ms so Ctrl-C (KeyboardInterrupt)
+/// ends a wait that a stopped robot program would keep open.
+fn run_wait(py: Python<'_>, mut wait: Wait<'_>) -> PyResult<()> {
+    loop {
+        let done = py
+            .detach(|| -> kuka_rsi::Result<bool> {
+                for _ in 0..50 {
+                    if wait.poll()? {
+                        return Ok(true);
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Ok(false)
+            })
+            .map_err(to_py)?;
+        if done {
+            return Ok(());
+        }
+        py.check_signals()?;
     }
 }
 
@@ -546,6 +680,20 @@ impl PyDriver {
         Ok(self.driver()?.is_faulted())
     }
 
+    /// Why the last session ended ("StopRequested", "Fault", "LinkTimeout", "Closed", "Panic"),
+    /// None until one has.
+    fn last_session_end(&self) -> PyResult<Option<&'static str>> {
+        Ok(self.driver()?.last_session_end().map(end_name))
+    }
+
+    fn is_paused(&self) -> PyResult<bool> {
+        Ok(self.driver()?.is_paused())
+    }
+
+    fn is_idle(&self) -> PyResult<bool> {
+        self.driver()?.is_idle().map_err(to_py)
+    }
+
     /// The limits in force: the constructor's, or the last accepted `set_limits`.
     fn limits(&self) -> PyResult<PyLimits> {
         Ok(PyLimits { inner: self.driver()?.limits() })
@@ -560,13 +708,26 @@ impl PyDriver {
 
     /// Waits for every queued command to be applied, the target queue to be empty and the
     /// command to have settled (reached the last target and the motion limiter to have caught
-    /// up). Raises `TimeoutError` (`Error::IdleTimeout`) if a clamp keeps the command short of
-    /// the target, or the program is paused, for longer than `timeout`.
-    #[pyo3(signature = (timeout=10.0))]
-    fn wait_idle(&self, py: Python<'_>, timeout: f64) -> PyResult<()> {
-        let d = self.driver()?;
-        let timeout = secs(timeout, "timeout")?;
-        py.detach(|| d.wait_idle(timeout)).map_err(to_py)
+    /// up). `timeout` counts playback time, which stands still while the program is stopped:
+    /// `TimeoutError` (`Error::IdleTimeout`) means playback ran that long and the command still
+    /// had not settled. `Paused` after `pause_timeout` of standing still; `Interrupted` if
+    /// `motion` was held or replaced.
+    #[pyo3(signature = (timeout=10.0, *, motion=None, pause_timeout=None))]
+    fn wait_idle(
+        &self,
+        py: Python<'_>,
+        timeout: f64,
+        motion: Option<&PyMotion>,
+        pause_timeout: Option<f64>,
+    ) -> PyResult<()> {
+        let mut wait = self.driver()?.wait(secs(timeout, "timeout")?);
+        if let Some(m) = motion {
+            wait = wait.motion(m.inner);
+        }
+        if let Some(p) = pause_timeout {
+            wait = wait.pause_timeout(secs(p, "pause_timeout")?);
+        }
+        run_wait(py, wait)
     }
 
     fn state(&self) -> PyResult<PyRobotState> {
@@ -577,8 +738,8 @@ impl PyDriver {
         Ok(PyStats { inner: self.driver()?.stats() })
     }
 
-    fn events(&self) -> PyResult<Vec<String>> {
-        Ok(self.driver()?.events().iter().map(|e| format!("{e:?}")).collect())
+    fn events<'py>(&self, py: Python<'py>) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        self.driver()?.events().iter().map(|e| event_dict(py, e)).collect()
     }
 
     fn drain_log(&self) -> PyResult<Vec<PyRobotState>> {
@@ -588,29 +749,40 @@ impl PyDriver {
     }
 
     #[pyo3(signature = (points, dt, replace=false))]
-    fn stream(&self, py: Python<'_>, points: &Bound<'_, PyAny>, dt: f64, replace: bool) -> PyResult<()> {
+    fn stream(&self, py: Python<'_>, points: &Bound<'_, PyAny>, dt: f64, replace: bool) -> PyResult<PyMotion> {
         let d = self.driver()?;
         let arr = as_f64_array(py, points)?;
         let arr: PyReadonlyArrayDyn<'_, f64> = arr.extract()?;
         let pts = points_from(arr)?;
-        d.stream(&pts, secs(dt, "dt")?, replace).map_err(to_py)
+        d.stream(&pts, secs(dt, "dt")?, replace).map(|inner| PyMotion { inner }).map_err(to_py)
     }
 
     /// `duration + 5.0` s of headroom past the requested duration when `block=True`, so a
     /// legitimate clamp-limited move that runs longer than `duration` still completes instead
-    /// of raising `TimeoutError` early.
-    #[pyo3(signature = (q, duration, block=false))]
-    fn move_to(&self, py: Python<'_>, q: &Bound<'_, PyAny>, duration: f64, block: bool) -> PyResult<()> {
+    /// of raising `TimeoutError` early. The headroom is playback time, as in `wait_idle`.
+    #[pyo3(signature = (q, duration, block=false, *, pause_timeout=None))]
+    fn move_to(
+        &self,
+        py: Python<'_>,
+        q: &Bound<'_, PyAny>,
+        duration: f64,
+        block: bool,
+        pause_timeout: Option<f64>,
+    ) -> PyResult<PyMotion> {
         let d = self.driver()?;
         let arr = as_f64_array(py, q)?;
         let arr: PyReadonlyArray1<'_, f64> = arr.extract()?;
         let q = arr6(arr, "q")?;
-        d.move_to(q, secs(duration, "duration")?).map_err(to_py)?;
+        let pause_timeout = pause_timeout.map(|p| secs(p, "pause_timeout")).transpose()?;
+        let motion = d.move_to(q, secs(duration, "duration")?).map_err(to_py)?;
         if block {
-            let timeout = secs(duration + 5.0, "duration")?;
-            py.detach(|| d.wait_idle(timeout)).map_err(to_py)?;
+            let mut wait = d.wait(secs(duration + 5.0, "duration")?).motion(motion);
+            if let Some(p) = pause_timeout {
+                wait = wait.pause_timeout(p);
+            }
+            run_wait(py, wait)?;
         }
-        Ok(())
+        Ok(PyMotion { inner: motion })
     }
 
     fn hold(&self) -> PyResult<()> {
@@ -791,6 +963,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDriver>()?;
     m.add_class::<PyRobotState>()?;
     m.add_class::<PyStats>()?;
+    m.add_class::<PyMotion>()?;
     m.add_function(wrap_pyfunction!(controller_files, m)?)?;
     m.add_function(wrap_pyfunction!(write_controller_files, m)?)?;
     m.add_function(wrap_pyfunction!(check_setup, m)?)?;
@@ -800,5 +973,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("ProtocolError", m.py().get_type::<ProtocolError>())?;
     m.add("LimitError", m.py().get_type::<LimitError>())?;
     m.add("Faulted", m.py().get_type::<Faulted>())?;
+    m.add("Paused", m.py().get_type::<Paused>())?;
+    m.add("Interrupted", m.py().get_type::<Interrupted>())?;
     Ok(())
 }

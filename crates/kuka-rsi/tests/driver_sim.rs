@@ -4,7 +4,7 @@ use kuka_rsi::Error;
 use kuka_rsi::config::{DriverConfig, EthernetConfig, Limits};
 use kuka_rsi::driver::Driver;
 use kuka_rsi::sim::{ControllerSim, SimConfig, SimExit, SimHandle, SimStatus};
-use kuka_rsi::state::{RobotState, SessionState};
+use kuka_rsi::state::{RobotState, SessionEnd, SessionState};
 use kuka_rsi::stats::Event;
 
 const SHIPPED: &str = include_str!("../controller/kuka_rsi_ethernet.xml");
@@ -33,6 +33,11 @@ fn connected() -> (Driver, SimHandle) {
     // arrives; until then `status()` is all zeros.
     assert!(wait_until(Duration::from_secs(1), || sim.status().cycles > 0), "simulator published no status");
     (drv, sim)
+}
+
+/// The events recorded since the last call, without their times.
+fn events(drv: &Driver) -> Vec<Event> {
+    drv.events().into_iter().map(|e| e.event).collect()
 }
 
 fn wait_until(timeout: Duration, mut f: impl FnMut() -> bool) -> bool {
@@ -68,7 +73,7 @@ fn handshake_captures_start_pose_and_close_stops_the_program() {
     }
     assert_eq!(drv.stats().sessions, 1);
     std::thread::sleep(Duration::from_millis(120)); // events reach the history via the monitor thread (Task 15)
-    let ev = drv.events();
+    let ev = events(&drv);
     assert!(ev.iter().any(|e| matches!(e, Event::RobotConnected { .. })), "{ev:?}");
     assert!(ev.iter().any(|e| matches!(e, Event::RtPriority { .. })), "{ev:?}");
     drv.close().unwrap();
@@ -140,14 +145,17 @@ fn link_lost_then_reconnect_recaptures_start() {
     let mut sim = ControllerSim::spawn(sim_config(&drv)).unwrap();
     drv.wait_for_robot(Duration::from_secs(3)).unwrap();
     sim.stop().unwrap();
+    assert_eq!(drv.last_session_end(), None, "no session has ended yet");
     assert!(wait_until(Duration::from_secs(2), || drv.session() == SessionState::Lost));
+    assert_eq!(drv.last_session_end(), Some(SessionEnd::LinkTimeout), "the robot went silent unasked");
     std::thread::sleep(Duration::from_millis(120));
-    assert!(drv.events().contains(&Event::LinkLost));
+    assert!(events(&drv).contains(&Event::SessionEnded(SessionEnd::LinkTimeout)));
     assert!(matches!(drv.stream(&[[0.0; 6]], Duration::from_millis(100), false), Err(Error::LinkLost(_))));
     let mut c = sim_config(&drv);
     c.q_start_deg[1] = -80.0;
     let _sim2 = ControllerSim::spawn(c).unwrap();
     drv.wait_for_robot(Duration::from_secs(3)).unwrap();
+    assert_eq!(drv.last_session_end(), Some(SessionEnd::LinkTimeout), "kept while the next session runs");
     let st = drv.state();
     assert!((st.q_setpoint[1] + 80f64.to_radians()).abs() < 1e-6, "{st:?}");
     let s = drv.stats();
@@ -176,7 +184,7 @@ fn fault_stops_the_robot() {
     drv.fault("policy diverged").unwrap();
     assert_eq!(sim.wait_exit(Duration::from_secs(2)), Some(SimExit::EStrError));
     std::thread::sleep(Duration::from_millis(120));
-    assert!(drv.events().contains(&Event::Fault));
+    assert!(events(&drv).contains(&Event::Fault));
 }
 
 #[test]
@@ -296,6 +304,8 @@ fn session_is_lost_after_close() {
     drv.wait_for_robot(Duration::from_secs(3)).unwrap();
     drv.close().unwrap();
     assert_eq!(drv.session(), SessionState::Lost, "nobody answers the robot after close");
+    assert_eq!(drv.last_session_end(), Some(SessionEnd::Closed));
+    assert!(events(&drv).contains(&Event::SessionEnded(SessionEnd::Closed)));
 }
 
 #[test]
@@ -381,7 +391,7 @@ fn a_cycle_other_than_the_robots_faults_the_session() {
         // The robot is told why: the fault message stops it.
         assert_eq!(sim.wait_exit(Duration::from_secs(2)), Some(SimExit::EStrError), "{cycle_ms}/{robot_ms}");
         std::thread::sleep(Duration::from_millis(120)); // events reach the history via the monitor thread
-        let ev = drv.events();
+        let ev = events(&drv);
         let want = Event::CycleMismatch { robot_ms, configured_ms: cycle_ms };
         assert!(ev.contains(&want), "{ev:?}");
     }
@@ -394,11 +404,11 @@ fn event_history_survives_until_read() {
     sim.stop().unwrap();
     assert!(wait_until(Duration::from_secs(2), || drv.session() == SessionState::Lost));
     std::thread::sleep(Duration::from_millis(120));
-    let ev = drv.events();
+    let ev = events(&drv);
     assert!(ev.iter().any(|e| matches!(e, Event::RtPriority { .. })), "{ev:?}");
     assert!(ev.iter().any(|e| matches!(e, Event::RobotConnected { .. })), "{ev:?}");
-    assert!(ev.contains(&Event::LinkLost), "{ev:?}");
-    assert!(drv.events().is_empty(), "drained");
+    assert!(ev.contains(&Event::SessionEnded(SessionEnd::LinkTimeout)), "{ev:?}");
+    assert!(events(&drv).is_empty(), "drained");
 }
 
 /// The first log index at which joint `axis` of the command is off `from`.
@@ -456,7 +466,7 @@ fn concurrent_streams_do_not_interleave() {
     drv.wait_idle(Duration::from_secs(30)).unwrap();
     assert_eq!(drv.stats().queue_len, 0);
     std::thread::sleep(Duration::from_millis(120));
-    let ev = drv.events();
+    let ev = events(&drv);
     assert!(!ev.contains(&Event::CommandRejected), "{ev:?}");
     let mut log = Vec::new();
     drv.drain_log(&mut log);
@@ -474,7 +484,7 @@ fn back_to_back_streams_that_cannot_both_fit_are_rejected() {
     // Replacing drops whatever is ahead of the call, in flight or not.
     drv.stream(&vec![q; 600], dt, true).unwrap();
     std::thread::sleep(Duration::from_millis(120));
-    let ev = drv.events();
+    let ev = events(&drv);
     assert!(!ev.contains(&Event::CommandRejected), "{ev:?}");
 }
 
@@ -529,6 +539,7 @@ fn fault_is_visible_and_refuses_motion_until_the_next_session() {
 
     // Restarting the program is a new session: the fault is gone.
     assert!(wait_until(Duration::from_secs(3), || drv.session() == SessionState::Lost));
+    assert_eq!(drv.last_session_end(), Some(SessionEnd::Fault));
     let _sim = ControllerSim::spawn(sim_config(&drv)).unwrap();
     drv.wait_for_robot(Duration::from_secs(3)).unwrap();
     assert!(!drv.is_faulted());
@@ -559,4 +570,189 @@ fn robot_addr_is_the_telegram_source_during_a_session() {
     sim.stop().unwrap();
     assert!(wait_until(Duration::from_secs(2), || drv.session() == SessionState::Lost), "{:?}", drv.session());
     assert_eq!(drv.robot_addr(), None);
+}
+
+/// Tell the simulator to report the program as running or stopped, and wait until the driver sees it.
+fn set_program_running(drv: &Driver, sim: &SimHandle, running: bool) {
+    sim.set_program_running(running);
+    assert!(wait_until(Duration::from_secs(1), || drv.state().program_running == running), "{:?}", drv.state());
+}
+
+#[test]
+fn wait_idle_outlasts_a_stopped_program() {
+    let (drv, sim) = connected();
+    let mut q = drv.state().q;
+    q[5] += 0.03;
+    set_program_running(&drv, &sim, false);
+    drv.move_to(q, Duration::from_millis(200)).unwrap();
+    std::thread::scope(|s| {
+        // 600 ms are plenty for a 200 ms move, and the program stays stopped for longer than that.
+        let wait = s.spawn(|| drv.wait_idle(Duration::from_millis(600)));
+        std::thread::sleep(Duration::from_millis(900));
+        let ended_early = wait.is_finished();
+        sim.set_program_running(true);
+        let result = wait.join().unwrap();
+        assert!(!ended_early, "the wait ended while the program was stopped: {result:?}");
+        result.unwrap();
+    });
+    assert!((drv.state().q_command[5] - q[5]).abs() < 1e-9, "{:?}", drv.state());
+}
+
+#[test]
+fn wait_idle_counts_playback_time_under_a_low_override() {
+    let (drv, sim) = connected();
+    sim.set_override_percent(10.0);
+    assert!(wait_until(Duration::from_secs(1), || drv.state().speed_override == 0.1), "{:?}", drv.state());
+    let mut q = drv.state().q;
+    q[5] += 0.03;
+    // 50 cycles of path at 10 % take 500 cycles: 2 s, well past the 800 ms the wait allows.
+    let c0 = drv.state().cycle;
+    drv.move_to(q, Duration::from_millis(200)).unwrap();
+    drv.wait_idle(Duration::from_millis(800)).unwrap();
+    let cycles = drv.state().cycle - c0;
+    assert!(cycles >= 480, "the override did not slow the move: {cycles} cycles");
+    assert!((drv.state().q_command[5] - q[5]).abs() < 1e-9, "{:?}", drv.state());
+}
+
+#[test]
+fn a_pause_longer_than_the_pause_timeout_is_reported_as_paused() {
+    let (drv, sim) = connected();
+    let mut q = drv.state().q;
+    q[5] += 0.03;
+    assert!(!drv.is_paused());
+    set_program_running(&drv, &sim, false);
+    assert!(wait_until(Duration::from_secs(1), || drv.is_paused()));
+    drv.move_to(q, Duration::from_millis(200)).unwrap();
+    let t0 = Instant::now();
+    let r = drv.wait(Duration::from_secs(5)).pause_timeout(Duration::from_millis(300)).run();
+    assert!(matches!(r, Err(Error::Paused(_))), "{r:?}");
+    assert!(t0.elapsed() >= Duration::from_millis(300), "{:?}", t0.elapsed());
+    // The move is still queued and finishes once the program runs again.
+    set_program_running(&drv, &sim, true);
+    drv.wait(Duration::from_secs(5)).pause_timeout(Duration::from_secs(5)).run().unwrap();
+    assert!(!drv.is_paused());
+    assert!((drv.state().q_command[5] - q[5]).abs() < 1e-9, "{:?}", drv.state());
+}
+
+#[test]
+fn a_wait_shorter_than_the_move_times_out_while_playback_runs() {
+    let (drv, _sim) = connected();
+    let mut q = drv.state().q;
+    q[5] += 0.03;
+    drv.move_to(q, Duration::from_secs(2)).unwrap();
+    let r = drv.wait(Duration::from_millis(100)).pause_timeout(Duration::from_secs(5)).run();
+    assert!(matches!(r, Err(Error::IdleTimeout)), "{r:?}");
+}
+
+#[test]
+fn is_idle_follows_the_motion() {
+    let (drv, _sim) = connected();
+    assert!(drv.is_idle().unwrap());
+    let mut q = drv.state().q;
+    q[5] += 0.03;
+    let motion = drv.move_to(q, Duration::from_millis(300)).unwrap();
+    assert!(!drv.is_idle().unwrap(), "a queued move is not idle, applied or not");
+    drv.wait(Duration::from_secs(10)).motion(motion).run().unwrap();
+    assert!(drv.is_idle().unwrap());
+}
+
+#[test]
+fn is_idle_without_a_session_is_an_error() {
+    let drv = driver(500);
+    assert!(matches!(drv.is_idle(), Err(Error::Protocol(_))));
+    assert!(!drv.is_paused());
+}
+
+#[test]
+fn a_hold_interrupts_the_wait_for_a_motion() {
+    let (drv, _sim) = connected();
+    let mut q = drv.state().q;
+    q[5] += 0.05;
+    let motion = drv.move_to(q, Duration::from_secs(2)).unwrap();
+    std::thread::scope(|s| {
+        let wait = s.spawn(|| drv.wait(Duration::from_secs(10)).motion(motion).run());
+        std::thread::sleep(Duration::from_millis(100));
+        drv.hold().unwrap();
+        let r = wait.join().unwrap();
+        assert!(matches!(r, Err(Error::Interrupted)), "{r:?}");
+    });
+    // The hold itself settles, and a wait that names no motion has nothing to report.
+    drv.wait_idle(Duration::from_secs(5)).unwrap();
+    assert!(drv.state().q_command[5] < q[5] - 0.01, "the move was cut short: {:?}", drv.state());
+    // Still interrupted when asked again later.
+    assert!(matches!(drv.wait(Duration::from_secs(1)).motion(motion).run(), Err(Error::Interrupted)));
+}
+
+#[test]
+fn a_new_motion_interrupts_the_wait_for_the_one_it_replaces() {
+    let (drv, _sim) = connected();
+    let q0 = drv.state().q;
+    let mut q1 = q0;
+    q1[5] += 0.05;
+    let first = drv.move_to(q1, Duration::from_secs(2)).unwrap();
+    let second = drv.move_to(q0, Duration::from_millis(200)).unwrap();
+    assert!(matches!(drv.wait(Duration::from_secs(10)).motion(first).run(), Err(Error::Interrupted)));
+    drv.wait(Duration::from_secs(10)).motion(second).run().unwrap();
+
+    let third = drv.stream(&[q1], Duration::from_secs(2), false).unwrap();
+    let fourth = drv.stream(&[q0], Duration::from_millis(200), true).unwrap();
+    assert!(matches!(drv.wait(Duration::from_secs(10)).motion(third).run(), Err(Error::Interrupted)));
+    drv.wait(Duration::from_secs(10)).motion(fourth).run().unwrap();
+}
+
+#[test]
+fn appended_points_extend_the_motion() {
+    let (drv, _sim) = connected();
+    let q0 = drv.state().q;
+    let (mut a, mut b) = (q0, q0);
+    a[5] += 0.01;
+    b[5] += 0.02;
+    let first = drv.stream(&[a], Duration::from_millis(100), false).unwrap();
+    let second = drv.stream(&[b], Duration::from_millis(100), false).unwrap();
+    assert_eq!(first, second, "points appended to the queue are part of the same motion");
+    drv.wait(Duration::from_secs(10)).motion(first).run().unwrap();
+    assert!((drv.state().q_command[5] - b[5]).abs() < 1e-9, "{:?}", drv.state());
+}
+
+#[test]
+fn a_motion_of_an_ended_session_is_reported_as_link_lost() {
+    let drv = driver(300);
+    let mut sim = ControllerSim::spawn(sim_config(&drv)).unwrap();
+    drv.wait_for_robot(Duration::from_secs(3)).unwrap();
+    let mut q = drv.state().q;
+    q[5] += 0.05;
+    let motion = drv.move_to(q, Duration::from_secs(2)).unwrap();
+    sim.stop().unwrap();
+    assert!(wait_until(Duration::from_secs(2), || drv.session() == SessionState::Lost));
+    let _sim2 = ControllerSim::spawn(sim_config(&drv)).unwrap();
+    drv.wait_for_robot(Duration::from_secs(3)).unwrap();
+    // The new session is idle, but the move never finished.
+    assert!(drv.is_idle().unwrap());
+    assert!(matches!(drv.wait(Duration::from_secs(1)).motion(motion).run(), Err(Error::LinkLost(_))));
+}
+
+#[test]
+fn a_requested_stop_ends_the_session_as_stop_requested() {
+    let (drv, sim) = connected();
+    drv.stop_program().unwrap();
+    assert_eq!(sim.wait_exit(Duration::from_secs(2)), Some(SimExit::Stopped));
+    assert!(wait_until(Duration::from_secs(2), || drv.session() == SessionState::Lost));
+    assert_eq!(drv.last_session_end(), Some(SessionEnd::StopRequested));
+    std::thread::sleep(Duration::from_millis(120));
+    let ev = events(&drv);
+    assert!(ev.contains(&Event::SessionEnded(SessionEnd::StopRequested)), "{ev:?}");
+    assert!(!ev.contains(&Event::SessionEnded(SessionEnd::LinkTimeout)), "{ev:?}");
+}
+
+#[test]
+fn events_carry_the_time_of_their_cycle() {
+    let (drv, _sim) = connected();
+    std::thread::sleep(Duration::from_millis(120));
+    let ev = drv.events();
+    let connected = ev.iter().find(|e| matches!(e.event, Event::RobotConnected { .. })).expect("no RobotConnected");
+    let mut log = Vec::new();
+    drv.drain_log(&mut log);
+    assert_eq!(log[0].cycle, 1);
+    assert_eq!(connected.t, log[0].t, "the event has the time of the session's first log row");
+    assert!(ev.windows(2).all(|w| w[0].t <= w[1].t), "times run forward: {ev:?}");
 }

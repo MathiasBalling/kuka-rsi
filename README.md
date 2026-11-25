@@ -116,10 +116,11 @@ Units: radians, metres, seconds in the API; degrees and millimetres only on the 
 `stream` spreads each target over the cycles between points under the velocity and
 acceleration limits; an empty queue holds position; playback follows the pendant
 override and pauses when the program is stopped. A `stream` call is accepted whole or
-rejected before anything is queued (`LimitError`); `move_to(block=True)` and `wait_idle`
-raise `TimeoutError` if the robot cannot settle in time (a paused program, a limit
-holding the command short). `Limits.kr10_defaults()` keeps an acceleration limit of
-300°/s² with braking look-ahead; `max_acceleration=None` disables it.
+rejected before anything is queued (`LimitError`). `move_to(block=True)` and `wait_idle`
+count their timeout in playback time, so they wait through a low override and a stopped
+program; `TimeoutError` means the command could not settle (a limit holding it short).
+`Limits.kr10_defaults()` keeps an acceleration limit of 300°/s² with braking look-ahead;
+`max_acceleration=None` disables it.
 
 ## Platforms
 
@@ -140,9 +141,30 @@ holding the command short). `Limits.kr10_defaults()` keeps an acceleration limit
 - Ctrl-C in `rsi-monitor`, `rsi-doctor`, `jog` and `stream_trajectory` ends the robot
   program cleanly: the driver pulses `MoveStop`, waits up to 1 s for `RSI_MOVECORR()` to
   return, and the tool exits with code 130. In Python, leaving the `with Driver(...)` block
-  (also on `KeyboardInterrupt`) does the same through `close()`, but a Ctrl-C during a
-  blocking wait (`wait_idle`, `move_to(block=True)`, `wait_for_robot`) only takes effect
-  when that wait returns. `check_setup` reacts to Ctrl-C at once.
+  (also on `KeyboardInterrupt`) does the same through `close()`. `wait_idle`,
+  `move_to(block=True)` and `check_setup` react to Ctrl-C at once; during `wait_for_robot`
+  it only takes effect when that wait returns.
+- An application that keeps one driver open across several robot steps:
+  - While the program is stopped (the enabling switch or Start released), `is_paused()` is
+    true, the command holds and a blocking wait goes on; the move finishes after Start. To
+    bound the pause, pass `pause_timeout` and catch `Paused` (a `TimeoutError`; Rust:
+    `Wait::pause_timeout`, `Error::Paused`). The move stays queued either way. Not yet
+    tried at the robot: whether the telegrams keep coming while the program is stopped
+    (`docs/sessions/`, S6.5). If they do not, every release ends the session instead.
+  - `move_to` and `stream` return a `Motion`. A wait for it (`move_to(block=True)`,
+    `wait_idle(motion=...)`; Rust: `driver.wait(timeout).motion(m).run()`) raises
+    `Interrupted` when a `hold()`, e.g. from a Stop button on another thread, or a new
+    motion cut it short. A wait without a motion returns normally after a hold.
+  - `is_idle()` is the same check without blocking, for a loop of your own (Rust also has
+    `Wait::poll`).
+  - When a session ends, `last_session_end()` and the `SessionEnded` event say why:
+    `StopRequested` after `stop_program()`, `Fault`, `LinkTimeout` when the robot went
+    silent unasked, `Closed`. Blocking calls raise `LinkLost` in every case. The driver
+    keeps listening, so starting the KRL program again is a new session in the same
+    process.
+  - `events()` returns each event with its driver time `t`, the `t` of the `drain_log()`
+    row of the same cycle. In Python they are dicts: `{"kind": "RobotConnected", "t": 1.5,
+    "ipoc": 4004}`.
 - `fault(msg)` sends `Error: msg` to the robot and freezes the command. The fault
   persists until the KRL program restarts (a new session): meanwhile `is_faulted()` is
   true and `stream`, `move_to`, `notify` and `wait_idle` raise `Faulted` (Rust:
