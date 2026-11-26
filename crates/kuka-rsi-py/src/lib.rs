@@ -181,6 +181,7 @@ fn exit_name(e: SimExit) -> String {
         SimExit::Stopped => "Stopped".into(),
         SimExit::RsiBad { .. } => "RsiBad".into(),
         SimExit::CorrMonExceeded { .. } => "CorrMonExceeded".into(),
+        SimExit::CommandVelocity { .. } => "CommandVelocity".into(),
         SimExit::EStrError => "EStrError".into(),
         SimExit::MaxCycles => "MaxCycles".into(),
         SimExit::Shutdown => "Shutdown".into(),

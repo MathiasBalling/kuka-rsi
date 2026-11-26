@@ -36,9 +36,19 @@ pub struct SimConfig {
     pub drop_probability: f64,
     /// Reported in `OvPro`; `SimHandle::set_override_percent` changes it during a run.
     pub override_percent: f64,
-    /// Reported in `ProgStatus` (3 running, 4 stopped); `SimHandle::set_program_running` changes
-    /// it during a run. The simulator keeps applying `AK` either way.
+    /// The robot program runs; `SimHandle::set_program_running` changes it during a run, as the
+    /// Start key and the enabling switch do. A stopped robot stands still and ignores `AK`.
+    /// Reported in `ProgStatus` (3 running, 4 stopped).
     pub program_running: bool,
+    /// Cycles the robot already stands before `ProgStatus` reports the stop (a KR 10: 9).
+    pub stop_report_cycles: u32,
+    /// Cycles after `ProgStatus` reports the program running again before the robot follows
+    /// `AK`: the drives coming back on (a KR 10 after the enabling switch: 30).
+    pub drives_on_cycles: u32,
+    /// The controller's command velocity monitor: a setpoint step larger than this in one cycle
+    /// ends the run with `SimExit::CommandVelocity`. A robot that starts following `AK` again
+    /// takes the whole offset in one step.
+    pub max_step_deg: Option<f64>,
     pub stop_channel: Option<String>,
     pub max_cycles: Option<u64>,
     /// XorShift RNG seed for `jitter`/`drop_probability`. `0` maps to a fixed default,
@@ -68,6 +78,9 @@ impl SimConfig {
             drop_probability: 0.0,
             override_percent: 100.0,
             program_running: true,
+            stop_report_cycles: 0,
+            drives_on_cycles: 0,
+            max_step_deg: None,
             stop_channel: Some("MoveStop".into()),
             max_cycles: None,
             seed: 0x9E37_79B9_7F4A_7C15,
@@ -93,6 +106,11 @@ impl SimConfig {
                 return Err(Error::Config("max_velocity_deg_s must be finite and positive".into()));
             }
         }
+        if let Some(m) = self.max_step_deg {
+            if !m.is_finite() || m <= 0.0 {
+                return Err(Error::Config("max_step_deg must be finite and positive".into()));
+            }
+        }
         if !self.lag_cycles.is_finite() || self.lag_cycles < 0.0 {
             return Err(Error::Config("lag_cycles must be finite and non-negative".into()));
         }
@@ -109,8 +127,16 @@ impl SimConfig {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SimExit {
     Stopped,
-    RsiBad { late: u32 },
-    CorrMonExceeded { axis: usize },
+    RsiBad {
+        late: u32,
+    },
+    CorrMonExceeded {
+        axis: usize,
+    },
+    /// The setpoint of `axis` stepped by more than `SimConfig::max_step_deg` in one cycle.
+    CommandVelocity {
+        axis: usize,
+    },
     EStrError,
     MaxCycles,
     Shutdown,
@@ -245,6 +271,9 @@ impl ControllerSim {
         let mut clamped: u64 = 0;
         let mut overruns: u64 = 0;
         let alpha = if cfg.lag_cycles > 0.0 { 1.0 - (-1.0 / cfg.lag_cycles).exp() } else { 1.0 };
+        // Cycles since the program was stopped and since it was started; `u32::MAX` for a state
+        // that has lasted since before the run.
+        let (mut stood, mut ran) = if cfg.program_running { (0, u32::MAX) } else { (u32::MAX, 0) };
         let mut next = Instant::now();
         loop {
             if self.stop.load(Ordering::Relaxed) {
@@ -277,8 +306,17 @@ impl ControllerSim {
                 );
                 return Ok(SimExit::MaxCycles);
             }
+            let running = self.live.program_running.load(Ordering::Relaxed);
+            if running {
+                (stood, ran) = (0, ran.saturating_add(1));
+            } else {
+                (stood, ran) = (stood.saturating_add(1), 0);
+            }
+            // The robot stands as soon as its program stops and reports that late; it reports
+            // the program running at once and follows `AK` only when its drives are back on.
+            let follows = running && ran > cfg.drives_on_cycles;
             if let Some(s) = map.prog_status {
-                tele.slots[s] = if self.live.program_running.load(Ordering::Relaxed) { 3.0 } else { 4.0 };
+                tele.slots[s] = if running || stood <= cfg.stop_report_cycles { 3.0 } else { 4.0 };
             }
             if let Some(s) = map.ov_pro {
                 tele.slots[s] = f64::from_bits(self.live.override_percent.load(Ordering::Relaxed));
@@ -401,6 +439,9 @@ impl ControllerSim {
                 }
             }
             for i in 0..6 {
+                if !follows {
+                    break;
+                }
                 let ak = last_ak[i];
                 let c = ak.clamp(cfg.axiscorr_lower_deg[i], cfg.axiscorr_upper_deg[i]);
                 if c != ak {
@@ -420,6 +461,21 @@ impl ControllerSim {
                         Some(SimExit::CorrMonExceeded { axis: i }),
                     );
                     return Ok(SimExit::CorrMonExceeded { axis: i });
+                }
+                if cfg.max_step_deg.is_some_and(|m| (cfg.q_start_deg[i] + c - setpoint[i]).abs() > m) {
+                    self.publish(
+                        cycles,
+                        replies,
+                        late,
+                        ipoc,
+                        setpoint,
+                        q_actual,
+                        last_ak,
+                        clamped,
+                        overruns,
+                        Some(SimExit::CommandVelocity { axis: i }),
+                    );
+                    return Ok(SimExit::CommandVelocity { axis: i });
                 }
                 setpoint[i] = cfg.q_start_deg[i] + c;
                 let mut step = (setpoint[i] - q_actual[i]) * alpha;

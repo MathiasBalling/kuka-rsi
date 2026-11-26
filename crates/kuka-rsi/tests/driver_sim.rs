@@ -598,6 +598,50 @@ fn wait_idle_outlasts_a_stopped_program() {
     assert!((drv.state().q_command[5] - q[5]).abs() < 1e-9, "{:?}", drv.state());
 }
 
+/// A driver with the default limits and a simulator that stops like the KR 10 did (2026-11-26):
+/// it stands 9 cycles before `ProgStatus` says so, its drives need 30 cycles after a resume, and
+/// a setpoint step of more than 0.1 deg in a cycle ends RSI ("command velocity").
+fn connected_to_a_robot_that_stands() -> (Driver, SimHandle) {
+    let cfg = DriverConfig::new(EthernetConfig::from_str(SHIPPED).unwrap())
+        .bind("127.0.0.1:0".parse().unwrap())
+        .stop_channel("MoveStop")
+        .rt_priority(false);
+    let drv = Driver::spawn(cfg).unwrap();
+    let mut c = sim_config(&drv);
+    c.stop_report_cycles = 9;
+    c.drives_on_cycles = 30;
+    c.max_step_deg = Some(0.1);
+    let sim = ControllerSim::spawn(c).unwrap();
+    drv.wait_for_robot(Duration::from_secs(3)).unwrap();
+    (drv, sim)
+}
+
+#[test]
+fn a_move_survives_a_stop_and_a_resume_of_the_program() {
+    let (drv, sim) = connected_to_a_robot_that_stands();
+    let mut q = drv.state().q;
+    q[5] += 12f64.to_radians();
+    // Peak 5.6 deg/s: the command runs 0.2 deg ahead of the robot before the stop is reported.
+    let motion = drv.move_to(q, Duration::from_secs(4)).unwrap();
+    std::thread::sleep(Duration::from_millis(2000));
+    sim.set_program_running(false);
+    assert!(wait_until(Duration::from_secs(1), || drv.is_paused()), "the stop was never reported");
+    std::thread::sleep(Duration::from_millis(300));
+    let st = drv.state();
+    assert!((st.q_command[5] - st.q[5]).abs() < 1e-5, "the command stands where the robot does: {st:?}");
+    sim.set_program_running(true);
+    drv.wait(Duration::from_secs(6)).motion(motion).run().unwrap();
+    assert_eq!(sim.status().exit, None, "the robot stopped RSI");
+    // The move went on from where the robot stood: nowhere faster than the move itself.
+    let mut log = Vec::new();
+    drv.drain_log(&mut log);
+    let fastest = log.windows(2).map(|w| (w[1].q[5] - w[0].q[5]).abs()).fold(0.0, f64::max);
+    let peak = 12f64.to_radians() * 1.875 / 1000.0;
+    assert!(fastest <= peak * 1.02, "a step of {fastest} rad in a cycle, the move peaks at {peak}");
+    assert!((drv.state().q_command[5] - q[5]).abs() < 1e-9, "{:?}", drv.state());
+    assert!((settled(&drv, &sim).q_actual_deg[5] - q[5].to_degrees()).abs() < 1e-3);
+}
+
 #[test]
 fn wait_idle_counts_playback_time_under_a_low_override() {
     let (drv, sim) = connected();

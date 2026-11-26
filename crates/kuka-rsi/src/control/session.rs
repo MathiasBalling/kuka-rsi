@@ -13,9 +13,25 @@ use crate::{Error, Result};
 
 /// Cycles a message or stop pulse is repeated for.
 pub const MESSAGE_CYCLES: u32 = 25;
-/// Cycles after a stop request within which the end of the session counts as requested: the
-/// pulse and as long again. A robot that still sends after that did not stop on the pulse.
-pub const STOP_GRACE_CYCLES: u32 = 2 * MESSAGE_CYCLES;
+/// How long after a stop request the end of the session counts as requested. A KR 10 sent its
+/// last telegram 116 ms after the pulse: the time its program takes to reach `RSI_OFF`, which
+/// the KRL interpreter does not bound. A robot that still sends after this did not stop on the
+/// pulse.
+pub const STOP_GRACE: Duration = Duration::from_secs(1);
+/// How long playback waits after the robot program resumes. `ProgStatus` reports the program
+/// running before the robot can move: after the enabling switch was released, the drives of a
+/// KR 10 came back on 72 to 120 ms later, and RSI stops with "command velocity" if the command
+/// has moved away from the robot by then.
+pub const RESUME_DELAY: Duration = Duration::from_millis(500);
+/// How long playback takes to return to full speed after `RESUME_DELAY`, so the robot leaves
+/// its standstill with the acceleration of a move that starts, not of one under way.
+pub const RESUME_RAMP: Duration = Duration::from_millis(500);
+/// How far back a stop looks for the point of the path where the robot came to stand. The
+/// command runs ahead of the robot by its following lag and by the cycles the stop is reported
+/// late: 18 cycles together on a KR 10.
+pub const REWIND_MAX: Duration = Duration::from_secs(1);
+/// Cycles the search for that point goes on past the closest one found.
+const REWIND_PATIENCE: u32 = 25;
 
 pub struct Session {
     state: SessionState,
@@ -28,7 +44,9 @@ pub struct Session {
     estr_cycles: u32,
     stop_slot: Option<usize>,
     stop_cycles: u32,
-    /// Cycles left of `STOP_GRACE_CYCLES` since the last stop request.
+    /// `STOP_GRACE` in cycles.
+    stop_grace_cycles: u32,
+    /// Cycles left of `stop_grace_cycles` since the last stop request.
     stop_grace: u32,
     frozen: Option<[f64; 6]>,
     cycles: u64,
@@ -36,6 +54,21 @@ pub struct Session {
     played: f64,
     /// The last cycle's playback rate was 0.
     paused: bool,
+    /// `RESUME_DELAY` in cycles.
+    resume_delay: u32,
+    /// Cycles left of `resume_delay` since the program last reported running again.
+    resume_wait: u32,
+    /// `RESUME_RAMP` and `REWIND_MAX` in cycles.
+    resume_ramp: u32,
+    rewind_max: u32,
+    /// Cycles of the ramp played since the robot last stood; `resume_ramp` once at full speed.
+    ramp: u32,
+    /// The robot does not follow the command: its program is stopped, or resumed less than
+    /// `RESUME_DELAY` ago. The command is the measured position and nothing is played.
+    standing: bool,
+    /// What `is_settled` reports while `standing`: the command had reached the last target when
+    /// the robot stopped, or the motion was replaced since.
+    standing_settled: bool,
     last_command: [f64; 6],
     tracking_alarm: bool,
     starved_alarm: bool,
@@ -71,6 +104,14 @@ impl Session {
             cycles: 0,
             played: 0.0,
             paused: false,
+            stop_grace_cycles: (STOP_GRACE.as_secs_f64() / cycle.as_secs_f64()).ceil() as u32,
+            resume_delay: (RESUME_DELAY.as_secs_f64() / cycle.as_secs_f64()).ceil() as u32,
+            resume_wait: 0,
+            resume_ramp: (RESUME_RAMP.as_secs_f64() / cycle.as_secs_f64()).ceil() as u32,
+            rewind_max: (REWIND_MAX.as_secs_f64() / cycle.as_secs_f64()).ceil() as u32,
+            ramp: 0,
+            standing: false,
+            standing_settled: false,
             last_command: [0.0; 6],
             tracking_alarm: false,
             starved_alarm: false,
@@ -108,10 +149,15 @@ impl Session {
     }
 
     /// The target queue is empty and the command has reached the last target (the limiter is not
-    /// still catching up), or nothing has been commanded yet.
+    /// still catching up), or nothing has been commanded yet. A move that had finished stays
+    /// settled while the robot stands with its program stopped, although the command follows
+    /// the robot then; it returns to the target after the resume.
     pub fn is_settled(&self) -> bool {
         if !self.interp.is_idle() {
             return false;
+        }
+        if self.standing {
+            return self.standing_settled;
         }
         match self.limiter.last() {
             None => true,
@@ -177,6 +223,9 @@ impl Session {
         self.stop_grace = 0;
         self.cycles = 0;
         self.paused = false;
+        self.resume_wait = 0;
+        self.ramp = self.resume_ramp;
+        self.standing = false;
         self.last_command = q_actual;
         self.tracking_alarm = false;
         self.starved_alarm = false;
@@ -186,10 +235,42 @@ impl Session {
         self.event(Event::RobotConnected { ipoc: tele.ipoc });
     }
 
+    /// Drop the queue: playback starts again from the last command, which is where the robot
+    /// stands if its program is stopped.
+    fn drop_queue(&mut self) -> [f64; 6] {
+        let last = self.limiter.last().unwrap_or(self.q_start);
+        self.interp.reset(last);
+        self.standing_settled = true;
+        last
+    }
+
+    /// The robot came to stand at `q` with a move under way: take the playback back to the
+    /// point of the path closest to `q`, so the move goes on from where the robot is. The stop
+    /// is reported some cycles late and the robot follows the command with a lag, so the
+    /// command has run ahead; without this the limiter would close that gap after the resume
+    /// at the velocity limit. A queue that had emptied is left alone: that move is played, and
+    /// the limiter closes what is left of it.
+    fn rewind_to(&mut self, q: &[f64; 6]) {
+        if self.interp.is_idle() || self.frozen.is_some() {
+            return;
+        }
+        let distance = |p: [f64; 6]| (0..6).map(|i| (p[i] - q[i]) * (p[i] - q[i])).sum::<f64>();
+        let (mut best, mut best_d) = (0, distance(self.interp.current()));
+        for n in 1..=self.rewind_max {
+            let d = distance(self.interp.position_behind(f64::from(n)));
+            if d < best_d {
+                (best, best_d) = (n, d);
+            } else if n - best > REWIND_PATIENCE {
+                break;
+            }
+        }
+        self.played = (self.played - self.interp.rewind(f64::from(best))).max(0.0);
+    }
+
     /// The session is over: drop the queue and wait for a new session.
     pub fn lost(&mut self, reason: SessionEnd) {
         self.state = SessionState::Lost;
-        self.interp.reset(self.limiter.last().unwrap_or(self.q_start));
+        self.drop_queue();
         self.frozen = None;
         self.event(Event::SessionEnded(reason));
     }
@@ -219,14 +300,14 @@ impl Session {
                     return Err(Error::Faulted);
                 }
                 self.limits.check_position(&q)?;
-                self.interp.reset(self.limiter.last().unwrap_or(self.q_start));
+                self.drop_queue();
                 if !self.interp.push(Segment { q_end: q, cycles, blend: Blend::Quintic }) {
                     return Err(Error::QueueFull);
                 }
                 Ok(())
             }
             Command::Hold => {
-                self.interp.reset(self.limiter.last().unwrap_or(self.q_start));
+                self.drop_queue();
                 Ok(())
             }
             Command::Fault(msg) => {
@@ -235,9 +316,7 @@ impl Session {
                 let room = self.estr.capacity() - self.estr.len();
                 self.estr.push_str(&msg[..msg.len().min(room)]);
                 self.estr_cycles = MESSAGE_CYCLES;
-                let last = self.limiter.last().unwrap_or(self.q_start);
-                self.frozen = Some(last);
-                self.interp.reset(last);
+                self.frozen = Some(self.drop_queue());
                 self.event(Event::Fault);
                 Ok(())
             }
@@ -256,7 +335,7 @@ impl Session {
                     return Err(Error::Config("no stop channel configured (DriverConfig::stop_channel)".into()));
                 }
                 self.stop_cycles = MESSAGE_CYCLES;
-                self.stop_grace = STOP_GRACE_CYCLES;
+                self.stop_grace = self.stop_grace_cycles;
                 self.event(Event::StopPulsed);
                 Ok(())
             }
@@ -296,7 +375,7 @@ impl Session {
             return Err(Error::QueueFull);
         }
         if replace {
-            self.interp.reset(self.limiter.last().unwrap_or(self.q_start));
+            self.drop_queue();
         }
         for &p in points {
             if !self.interp.push(Segment { q_end: p, cycles: cycles_per_point, blend: Blend::Linear }) {
@@ -309,7 +388,28 @@ impl Session {
     /// Produce this cycle's reply. Returns the joint command (rad).
     pub fn step(&mut self, tele: &RobotTelegram, state: &RobotState, out: &mut SensorTelegram) -> [f64; 6] {
         self.cycles += 1;
-        let rate = if state.program_running { self.speed_scale * state.speed_override } else { 0.0 };
+        // A robot whose program is stopped ignores the correction and takes all of it in one
+        // step when the program resumes, so the command stays where the robot stands: there is
+        // nothing to jump across then.
+        if !state.program_running {
+            self.resume_wait = self.resume_delay;
+        }
+        let standing = self.resume_wait > 0;
+        if state.program_running {
+            self.resume_wait = self.resume_wait.saturating_sub(1);
+        }
+        if standing && !self.standing {
+            self.standing_settled = self.is_settled();
+            self.rewind_to(&state.q);
+        }
+        self.standing = standing;
+        let rate = if standing {
+            self.ramp = 0;
+            0.0
+        } else {
+            self.ramp = (self.ramp + 1).min(self.resume_ramp);
+            self.speed_scale * state.speed_override * f64::from(self.ramp) / f64::from(self.resume_ramp.max(1))
+        };
         self.played += rate;
         self.paused = rate <= 0.0;
         self.stop_grace = self.stop_grace.saturating_sub(1);
@@ -326,6 +426,10 @@ impl Session {
 
         let q_cmd = match self.frozen {
             Some(f) => f,
+            None if standing => {
+                self.limiter.reset(state.q);
+                state.q
+            }
             None => self.limiter.step(target, self.q_start),
         };
         let c = self.limiter.counts();
@@ -400,6 +504,10 @@ mod tests {
     use std::time::Duration;
 
     const START_DEG: [f64; 6] = [10.0, -90.0, 90.0, 0.0, 90.0, 0.0];
+    /// `STOP_GRACE`, `RESUME_DELAY` and `RESUME_RAMP` at the 4 ms cycle of these tests.
+    const STOP_GRACE_CYCLES: u32 = 250;
+    const RESUME_DELAY_CYCLES: u32 = 125;
+    const RESUME_RAMP_CYCLES: u32 = 125;
 
     fn tele(aspos_deg: [f64; 6], aipos_deg: [f64; 6], ipoc: u64) -> RobotTelegram {
         RobotTelegram { ipoc, aspos: aspos_deg, aipos: aipos_deg, ..Default::default() }
@@ -483,14 +591,15 @@ mod tests {
         st.speed_override = 0.5;
         let mut out = SensorTelegram::default();
         for _ in 0..10 {
-            s.step(&t, &st, &mut out);
+            st.q = s.step(&t, &st, &mut out);
         }
         assert!((out.ak[0] - 0.01f64.to_degrees()).abs() < 1e-9, "half speed: {:?}", out.ak);
         st.program_running = false;
         for _ in 0..10 {
-            s.step(&t, &st, &mut out);
+            st.q = s.step(&t, &st, &mut out);
         }
         assert!((out.ak[0] - 0.01f64.to_degrees()).abs() < 1e-9, "paused: {:?}", out.ak);
+        assert_eq!(s.queue_len(), 1, "the rest of the move is kept");
         assert_eq!(s.starved(), 0);
     }
 
@@ -671,8 +780,15 @@ mod tests {
         assert!((s.played() - 5.0).abs() < 1e-12, "a stopped program plays nothing: {}", s.played());
         assert!(s.is_paused());
         st.program_running = true;
+        for _ in 0..RESUME_DELAY_CYCLES {
+            s.step(&t, &st, &mut out);
+        }
+        assert!((s.played() - 5.0).abs() < 1e-12, "nor does the wait after the resume: {}", s.played());
+        assert!(s.is_paused());
         st.speed_override = 0.0;
-        s.step(&t, &st, &mut out);
+        for _ in 0..RESUME_RAMP_CYCLES {
+            s.step(&t, &st, &mut out);
+        }
         assert!(s.is_paused(), "override 0 is a pause too");
         st.speed_override = 1.0;
         s.step(&t, &st, &mut out);
@@ -681,6 +797,214 @@ mod tests {
         s.apply(Command::SetSpeedScale(0.0)).unwrap();
         s.step(&t, &st, &mut out);
         assert!(s.is_paused(), "speed scale 0 is a pause too");
+    }
+
+    /// A session with the default acceleration limit, a robot that follows the command exactly
+    /// while its program runs, and a move of A1 under way: 0.2 rad over 200 cycles, 60 played.
+    fn moving() -> (Session, RobotTelegram, RobotState, SensorTelegram) {
+        let mut s = Session::new(Limits::kr10_defaults(), Duration::from_millis(4), Some(6));
+        let t = tele(START_DEG, START_DEG, 1000);
+        s.start(&t);
+        let mut q = s.q_start();
+        q[0] += 0.2;
+        s.apply(Command::MoveTo { q, cycles: 200.0 }).unwrap();
+        let mut st = state(&t);
+        let mut out = SensorTelegram::default();
+        for _ in 0..60 {
+            st.q = s.step(&t, &st, &mut out);
+        }
+        (s, t, st, out)
+    }
+
+    #[test]
+    fn a_stopped_program_is_commanded_to_where_the_robot_stands() {
+        let (mut s, t, mut st, mut out) = moving();
+        // The robot stops short of the command, and reports the stopped program afterwards.
+        let stood = st.q[0] - 0.004;
+        st.q[0] = stood;
+        st.program_running = false;
+        for _ in 0..50 {
+            let q = s.step(&t, &st, &mut out);
+            assert_eq!(q[0], stood, "the command is the measured position");
+        }
+        assert!((out.ak[0] - (stood - s.q_start()[0]).to_degrees()).abs() < 1e-9, "{:?}", out.ak);
+        // The brakes let the axis sag: the command follows.
+        st.q[0] = stood - 0.001;
+        let q = s.step(&t, &st, &mut out);
+        assert_eq!(q[0], stood - 0.001);
+        assert!(s.is_paused());
+        assert_eq!(s.clamp_counts(), ClampCounts::default(), "following the robot is not a clamp");
+    }
+
+    #[test]
+    fn playback_waits_for_the_drives_after_the_program_resumes() {
+        let (mut s, t, mut st, mut out) = moving();
+        let stood = st.q[0] - 0.004;
+        st.q[0] = stood;
+        st.program_running = false;
+        s.step(&t, &st, &mut out);
+        let played = s.played();
+        // "Running" again, but the drives are not on yet: the robot stands still.
+        st.program_running = true;
+        for i in 0..RESUME_DELAY_CYCLES {
+            let q = s.step(&t, &st, &mut out);
+            assert_eq!(q[0], stood, "cycle {i} after the resume");
+            assert!(s.is_paused(), "cycle {i} after the resume");
+        }
+        assert_eq!(s.played(), played, "nothing is played while waiting");
+        // Then the command leaves the measured position without a step and reaches the target.
+        let amax = 300f64.to_radians() * 0.004 * 0.004;
+        let (mut prev, mut prev_delta) = (stood, 0.0);
+        for i in 0..400 {
+            let q = s.step(&t, &st, &mut out);
+            st.q = q;
+            let delta = q[0] - prev;
+            assert!((delta - prev_delta).abs() <= amax + 1e-12, "cycle {i}: step of {delta} after {prev_delta}");
+            (prev, prev_delta) = (q[0], delta);
+            if i == 0 {
+                assert!(!s.is_paused());
+            }
+        }
+        assert!((prev - (s.q_start()[0] + 0.2)).abs() < 1e-9, "reached the target: {prev}");
+        assert!(s.is_settled());
+    }
+
+    #[test]
+    fn a_stop_takes_the_move_back_to_where_the_robot_stands() {
+        let mut s = Session::new(Limits::kr10_defaults(), Duration::from_millis(4), Some(6));
+        let t = tele(START_DEG, START_DEG, 1000);
+        s.start(&t);
+        let mut q = s.q_start();
+        q[0] += 0.2;
+        s.apply(Command::MoveTo { q, cycles: 200.0 }).unwrap();
+        let mut st = state(&t);
+        let mut out = SensorTelegram::default();
+        let mut peak = 0f64;
+        for _ in 0..60 {
+            let cmd = s.step(&t, &st, &mut out);
+            peak = peak.max(cmd[0] - st.q[0]);
+            st.q = cmd;
+        }
+        // The robot stands, and 15 cycles go by before its program reports that.
+        let stood = st.q[0];
+        let mut ahead = stood;
+        for _ in 0..15 {
+            ahead = s.step(&t, &st, &mut out)[0];
+        }
+        assert!(ahead - stood > 0.015, "the command ran ahead by {}", ahead - stood);
+        st.program_running = false;
+        s.step(&t, &st, &mut out);
+        assert!((s.played() - 60.0).abs() < 1e-9, "the 15 cycles are to be played again: {}", s.played());
+        assert!(!s.is_idle());
+        st.program_running = true;
+        for _ in 0..RESUME_DELAY_CYCLES {
+            s.step(&t, &st, &mut out);
+        }
+        // The move goes on from the robot: never faster than the move itself, and as slowly
+        // out of the standstill as a move that starts.
+        let mut cycles = 0;
+        let mut first = 0.0;
+        while !s.is_settled() {
+            let cmd = s.step(&t, &st, &mut out);
+            let step = cmd[0] - st.q[0];
+            if cycles == 0 {
+                first = step;
+            }
+            peak = peak.max(0.2 * 1.875 / 200.0);
+            assert!(step <= peak + 1e-12, "cycle {cycles}: a step of {step}, the move peaks at {peak}");
+            st.q = cmd;
+            cycles += 1;
+            assert!(cycles < 1000, "the move never ended");
+        }
+        assert!(first < 2e-5, "the first step after the standstill: {first}");
+        assert!((st.q[0] - q[0]).abs() < 1e-9);
+        // 140 cycles of the move were left, and the ramp back to full speed costs 62 more.
+        assert!((200..=206).contains(&cycles), "{cycles} cycles after the resume");
+        assert!((s.played() - 200.0).abs() < 1e-6, "a move of 200 cycles: {}", s.played());
+    }
+
+    #[test]
+    fn playback_returns_to_full_speed_over_the_resume_ramp() {
+        let (mut s, t, mut st, mut out) = moving();
+        st.program_running = false;
+        s.step(&t, &st, &mut out);
+        st.program_running = true;
+        for _ in 0..RESUME_DELAY_CYCLES {
+            s.step(&t, &st, &mut out);
+        }
+        let played = s.played();
+        s.step(&t, &st, &mut out);
+        assert!((s.played() - played - 1.0 / 125.0).abs() < 1e-12, "the first cycle of the ramp");
+        for _ in 1..RESUME_RAMP_CYCLES {
+            s.step(&t, &st, &mut out);
+        }
+        assert!((s.played() - played - 63.0).abs() < 1e-9, "the sum of 1/125..=125/125: {}", s.played() - played);
+        s.step(&t, &st, &mut out);
+        assert!((s.played() - played - 64.0).abs() < 1e-9, "full speed from here");
+    }
+
+    #[test]
+    fn a_stop_during_the_wait_for_the_drives_starts_the_wait_again() {
+        let (mut s, t, mut st, mut out) = moving();
+        let stood = st.q[0];
+        st.program_running = false;
+        s.step(&t, &st, &mut out);
+        st.program_running = true;
+        for _ in 0..RESUME_DELAY_CYCLES - 1 {
+            s.step(&t, &st, &mut out);
+        }
+        st.program_running = false;
+        s.step(&t, &st, &mut out);
+        st.program_running = true;
+        for i in 0..RESUME_DELAY_CYCLES {
+            assert_eq!(s.step(&t, &st, &mut out)[0], stood, "cycle {i} after the second resume");
+        }
+        assert!(s.step(&t, &st, &mut out)[0] > stood);
+    }
+
+    #[test]
+    fn a_move_that_had_finished_stays_settled_through_a_stop() {
+        let (mut s, t, mut st, mut out) = moving();
+        for _ in 0..200 {
+            st.q = s.step(&t, &st, &mut out);
+        }
+        assert!(s.is_settled());
+        let target = st.q[0];
+        // Stopped with a servo error: the command follows the robot, the move is still done.
+        st.q[0] = target - 1e-4;
+        st.program_running = false;
+        for _ in 0..10 {
+            s.step(&t, &st, &mut out);
+        }
+        assert!(s.is_settled(), "the move finished before the stop");
+        st.program_running = true;
+        for _ in 0..RESUME_DELAY_CYCLES + 50 {
+            st.q = s.step(&t, &st, &mut out);
+        }
+        assert!((st.q[0] - target).abs() < 1e-12, "back on the target after the resume: {}", st.q[0] - target);
+        assert!(s.is_settled());
+    }
+
+    #[test]
+    fn a_move_stopped_under_way_is_not_settled() {
+        let (mut s, t, mut st, mut out) = moving();
+        st.program_running = false;
+        s.step(&t, &st, &mut out);
+        assert!(!s.is_settled());
+        s.apply(Command::Hold).unwrap();
+        s.step(&t, &st, &mut out);
+        assert!(s.is_settled(), "held where the robot stands");
+        assert!(s.is_idle());
+    }
+
+    #[test]
+    fn a_fault_stays_frozen_through_a_stop() {
+        let (mut s, t, mut st, mut out) = moving();
+        s.apply(Command::Fault(ArrayString::from("x").unwrap())).unwrap();
+        let frozen = s.step(&t, &st, &mut out);
+        st.q[0] -= 0.004;
+        st.program_running = false;
+        assert_eq!(s.step(&t, &st, &mut out), frozen);
     }
 
     #[test]

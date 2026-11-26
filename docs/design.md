@@ -520,12 +520,29 @@ approved text is left as written; where the two disagree, this section wins.
   pushed; the real-time thread does not know it. `is_idle` and `is_paused` are the
   non-blocking reads.
 - **§5.6 and §8, session end and events (2026-11-25).** `Event::LinkLost` became
-  `Event::SessionEnded(SessionEnd)`: `StopRequested` (a stop pulse at most
-  `STOP_GRACE_CYCLES` before the telegrams stopped), `Fault`, `LinkTimeout`, `Closed`
-  (the driver closed an active session; this had no event before), `Panic`.
+  `Event::SessionEnded(SessionEnd)`: `StopRequested` (a stop pulse at most `STOP_GRACE`,
+  1 s, before the telegrams stopped; 116 ms was measured on 2026-11-26), `Fault`,
+  `LinkTimeout`, `Closed` (the driver closed an active session; this had no event
+  before), `Panic`.
   `Driver::last_session_end` keeps the last one. `events()` returns `TimedEvent`s: the
   real-time thread stamps each with the arrival time of the telegram it handles, the `t`
   of that cycle's log row, or with the current time outside a cycle.
+- **§5.4, a stopped program (2026-11-26, session at the robot).** Measured on a KR 10 in
+  T1: the telegrams continue while the program is stopped (Start key or enabling switch,
+  up to minutes, drives off after the enabling switch); the robot stands about 9 cycles
+  before `ProgStatus` leaves 3; a stopped robot ignores `AK` and applies the whole offset
+  in one step when it moves again; after the enabling switch `ProgStatus` returns to 3
+  56 to 120 ms before the drives are on. An offset of 0.21 deg on A6 was survived, 0.29
+  and 0.35 deg ended RSI with "command velocity A6". The session therefore treats the
+  robot as standing while `ProgStatus` is not 3 and for `RESUME_DELAY` (0.5 s) after:
+  the command is the measured position, nothing is played, and on the first such cycle
+  the interpolator is rewound (at most `REWIND_MAX`, 1 s) to the point of the path
+  closest to the measured position, with the playback clock taken back by the same
+  amount. After the delay the rate returns to full over `RESUME_RAMP` (0.5 s) and the
+  limiter starts from rest. The interpolator keeps the played segments that later pushes
+  have not overwritten, for the rewind. A queue that had emptied is not rewound, and
+  `is_settled` keeps the value it had when the robot stopped. Override changes need none
+  of this: `OvPro` follows the pendant and the robot tracks the scaled playback.
 - **§5.8, Python.** `Paused(TimeoutError)` and `Interrupted(Error)` map the two new
   errors, `Motion` is an opaque class, and `events()` returns one dict per event (`kind`,
   `t`, the kind's fields) instead of debug strings. Blocking waits take the GIL back

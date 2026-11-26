@@ -115,7 +115,8 @@ with Driver(limits=limits, stop_channel="MoveStop") as robot:   # built-in kuka_
 Units: radians, metres, seconds in the API; degrees and millimetres only on the wire.
 `stream` spreads each target over the cycles between points under the velocity and
 acceleration limits; an empty queue holds position; playback follows the pendant
-override and pauses when the program is stopped. A `stream` call is accepted whole or
+override and pauses when the program is stopped (the move then goes on from where the
+robot came to stand, see the notes below). A `stream` call is accepted whole or
 rejected before anything is queued (`LimitError`). `move_to(block=True)` and `wait_idle`
 count their timeout in playback time, so they wait through a low override and a stopped
 program; `TimeoutError` means the command could not settle (a limit holding it short).
@@ -146,11 +147,19 @@ program; `TimeoutError` means the command could not settle (a limit holding it s
   it only takes effect when that wait returns.
 - An application that keeps one driver open across several robot steps:
   - While the program is stopped (the enabling switch or Start released), `is_paused()` is
-    true, the command holds and a blocking wait goes on; the move finishes after Start. To
-    bound the pause, pass `pause_timeout` and catch `Paused` (a `TimeoutError`; Rust:
-    `Wait::pause_timeout`, `Error::Paused`). The move stays queued either way. Not yet
-    tried at the robot: whether the telegrams keep coming while the program is stopped
-    (`docs/sessions/`, S6.5). If they do not, every release ends the session instead.
+    true and a blocking wait goes on; the move finishes after Start. To bound the pause,
+    pass `pause_timeout` and catch `Paused` (a `TimeoutError`; Rust: `Wait::pause_timeout`,
+    `Error::Paused`). The move stays queued either way. Tried on a KR 10 in T1
+    (2026-11-26): the telegrams keep coming through a pause of minutes, with the drives
+    off after the enabling switch.
+  - A stopped robot ignores the correction and takes all of it in one step when its
+    program resumes, which ends RSI with "command velocity" if the command is somewhere
+    else by then. So while the program is stopped the command is the measured position,
+    and the move is taken back to the point where the robot came to stand (it stands
+    some cycles before `ProgStatus` says so). After Start, playback waits 0.5 s for the
+    drives and returns to full speed over another 0.5 s. With only the enabling switch
+    released, the pendant asks to confirm "RSI cannot set any outputs"; the move goes on
+    after that.
   - `move_to` and `stream` return a `Motion`. A wait for it (`move_to(block=True)`,
     `wait_idle(motion=...)`; Rust: `driver.wait(timeout).motion(m).run()`) raises
     `Interrupted` when a `hold()`, e.g. from a Stop button on another thread, or a new

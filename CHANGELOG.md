@@ -56,6 +56,14 @@ real robot.
   with `kind`, `t` and the fields of the kind, and blocking waits react to Ctrl-C. The
   simulator can stop and start its program and change its override during a run
   (`SimHandle::set_program_running`, `set_override_percent`).
+- A move goes on after the robot program was stopped and started again (Start key or
+  enabling switch). While the program is stopped the command follows the measured
+  position, the playback is taken back to where the robot came to stand, and after the
+  resume it waits 0.5 s for the drives and returns to full speed over 0.5 s. Before, the
+  command stood ahead of the robot and RSI ended with "command velocity" on the resume.
+  The simulator models a robot that stands while its program is stopped
+  (`SimConfig::stop_report_cycles`, `drives_on_cycles`, `max_step_deg`,
+  `SimExit::CommandVelocity`).
 - Python bindings (`kuka_rsi`, one abi3 wheel per platform for CPython 3.10+, numpy
   1.24+) with type stubs.
 - Controller files for KR C5 / KSS 8.7: RSI contexts, Ethernet configs and KRL programs,
